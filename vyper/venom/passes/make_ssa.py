@@ -99,7 +99,19 @@ class MakeSSA(IRPass):
                         new_ops.append(op)
                         continue
 
-                    op = self.latest_version_of(op)
+                    try:
+                        op = self.latest_version_of(op)
+                    except KeyError:
+                        print(f"DEBUG_FAIL_SSA: Undefined variable usage.")
+                        print(f"Instruction: {inst}")
+                        print(f"Variable: {op}")
+                        print(f"Block: {inst.parent.label} in Function: {inst.parent.parent.name.value}")
+                        print("Instructions in Block:")
+                        for ix in inst.parent.instructions:
+                            print(f"  {ix}")
+                        import sys
+                        sys.stdout.flush()
+                        raise
                     new_ops.append(op)
 
                 inst.operands = new_ops

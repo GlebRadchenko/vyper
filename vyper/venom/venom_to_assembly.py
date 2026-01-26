@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from vyper.evm.assembler.instructions import DATA_ITEM, PUSH, DataHeader
+from vyper.evm.assembler.instructions import DATA_ITEM, PUSH, PUSH_N, DataHeader
 from vyper.exceptions import CompilerPanic
 from vyper.ir.compile_ir import (
     PUSH_OFST,
@@ -28,7 +28,7 @@ from vyper.venom.context import IRContext, IRFunction
 from vyper.venom.stack_model import StackModel
 from vyper.venom.stack_spiller import StackSpiller
 
-DEBUG_SHOW_COST = False
+DEBUG_SHOW_COST = True
 if DEBUG_SHOW_COST:
     import sys
 
@@ -502,7 +502,7 @@ class VenomCompiler:
             # The return values must remain on the stack and are not consumed here
             operands = [inst.operands[-1]]
         else:
-            operands = inst.operands
+            operands = list(reversed(inst.operands))
 
         if opcode == "phi":
             ret = inst.output
@@ -554,7 +554,7 @@ class VenomCompiler:
                 operands[-1], operands[-2] = operands[-2], operands[-1]
 
         cost = self._stack_reorder([], stack, operands, spilled, dry_run=True)
-        if DEBUG_SHOW_COST and cost:
+        if DEBUG_SHOW_COST:
             print("ENTER", inst, file=sys.stderr)
             print("  HAVE", stack, file=sys.stderr)
             print("  WANT", operands, file=sys.stderr)
@@ -637,6 +637,14 @@ class VenomCompiler:
             raise CompilerPanic(f"Bad instruction: {opcode}")
         elif opcode in TEST_INSTRUCTIONS:  # pragma: nocover
             raise CompilerPanic(f"Bad instruction: {opcode}")
+        elif opcode == "loadimmutable":
+            # Resolve immutable value from context
+            # Operands: [immutable_id (IRLiteral with string value or as-is)]
+            immutable_id = str(inst.operands[0].value) if hasattr(inst.operands[0], 'value') else str(inst.operands[0])
+            # Strip quotes if present
+            immutable_id = immutable_id.strip('"').strip("'")
+            value = self.ctx.immutables.get(immutable_id, 0)
+            assembly.extend(PUSH_N(value, 32))
         else:
             raise Exception(f"Unknown opcode: {opcode}")
 

@@ -49,6 +49,7 @@ class IRContext:
         self.functions = {}
         self.entry_function = None
         self.data_segment = []
+        self.immutables = {}  # Map of immutable_id -> value (int)
 
         self.last_label = 0
         self.last_variable = 0

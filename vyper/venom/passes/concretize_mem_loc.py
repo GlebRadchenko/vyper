@@ -179,7 +179,13 @@ class MemLiveness:
                 fn = self.function.ctx.get_function(label)
                 # this lets us deallocate internal
                 # function memory after it's dead
-                live.addmany(self.mem_allocator.mems_used[fn])
+                if fn != self.function:
+                    try:
+                        live.addmany(self.mem_allocator.mems_used[fn])
+                    except KeyError:
+                        pass # Ignore missing functions (recursion/cycles)
+
+
 
                 for op in inst.operands:
                     # REVIEW: changed from ptr_from_op
@@ -233,7 +239,11 @@ class MemLiveness:
                 label = inst.operands[0]
                 assert isinstance(label, IRLabel)
                 fn = self.function.ctx.get_function(label)
-                used.addmany(self.mem_allocator.mems_used[fn])
+                if fn != self.function:
+                    try:
+                        used.addmany(self.mem_allocator.mems_used[fn])
+                    except KeyError:
+                        pass
             self.used[inst] = used.copy()
         return before != used
 
