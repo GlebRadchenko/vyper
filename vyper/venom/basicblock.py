@@ -464,8 +464,8 @@ class IRInstruction:
         operands = self.operands
         if self.opcode == "invoke":
             operands = [operands[0]] + list(reversed(operands[1:]))
-        # elif self.opcode not in ("jmp", "jnz", "djmp", "phi"):
-        #     operands = reversed(operands)  # type: ignore
+        elif self.opcode not in ("jmp", "jnz", "djmp", "phi"):
+            operands = reversed(operands)  # type: ignore
         s += ", ".join([(f"@{op}" if isinstance(op, IRLabel) else str(op)) for op in operands])
 
         if self.annotation:

@@ -259,8 +259,8 @@ class VenomTransformer(Transformer):
             # invoke <target> <stack arguments>
             operands = [operands[0]] + list(reversed(operands[1:]))
         # special cases: operands with labels look better un-reversed
-        # elif opcode not in ("jmp", "jnz", "djmp", "phi"):
-        #     operands.reverse()
+        elif opcode not in ("jmp", "jnz", "djmp", "phi"):
+            operands.reverse()
         return IRInstruction(opcode, operands)
 
     def operands_list(self, children) -> list[IROperand]:

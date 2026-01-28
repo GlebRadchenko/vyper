@@ -188,12 +188,9 @@ def memory_write_ops(inst) -> InstAccessOps:
     if opcode == "mstore":
         dst = inst.operands[1]
         return InstAccessOps(ofst=dst, size=IRLiteral(32))
-    if opcode in ("codecopy", "calldatacopy", "returndatacopy", "dloadbytes", "mcopy"):
-        # Yul: codecopy(dest, offset, size)
-        # IR: [dest, offset, size]
-        dst, _, size = inst.operands
+    if opcode in ("mcopy", "calldatacopy", "dloadbytes", "codecopy", "returndatacopy"):
+        size, _, dst = inst.operands
         return InstAccessOps(ofst=dst, size=size)
-        
     if opcode == "call":
         max_size, dst, _, _, _, _, _ = inst.operands
         # number of bytes written is indeterminate -- could
@@ -204,8 +201,7 @@ def memory_write_ops(inst) -> InstAccessOps:
         # ditto
         return InstAccessOps(ofst=dst, size=None, max_size=max_size)
     if opcode == "extcodecopy":
-        # Yul: extcodecopy(addr, dest, offset, size)
-        _, dst, _, size = inst.operands
+        size, _, dst, _ = inst.operands
         return InstAccessOps(ofst=dst, size=size)
 
     return InstAccessOps(ofst=None, size=None)
@@ -233,8 +229,7 @@ def memory_read_ops(inst) -> InstAccessOps:
         return InstAccessOps(ofst=ofst, size=size)
 
     if opcode == "mcopy":
-        # Yul: mcopy(dest, src, size)
-        _, src, size = inst.operands
+        size, src, _ = inst.operands
         return InstAccessOps(ofst=src, size=size)
 
     if opcode == "call":
@@ -243,9 +238,8 @@ def memory_read_ops(inst) -> InstAccessOps:
     if opcode in ("delegatecall", "staticcall"):
         _, _, size, src, _, _ = inst.operands
         return InstAccessOps(ofst=src, size=size)
-    if opcode in ("return", "revert"):
-        # Yul: return(offset, size)
-        src, size = inst.operands
+    if opcode == "return":
+        size, src = inst.operands
         return InstAccessOps(ofst=src, size=size)
     if opcode == "create":
         size, _, _ = inst.operands
@@ -257,9 +251,8 @@ def memory_read_ops(inst) -> InstAccessOps:
         return InstAccessOps(ofst=src, size=size)
 
     elif opcode == "sha3":
-        # Yul: sha3(offset, size)
-        src, size = inst.operands
-        return InstAccessOps(ofst=src, size=size)
+        size, ofst = inst.operands
+        return InstAccessOps(ofst=ofst, size=size)
     elif opcode == "log":
         size, src = inst.operands[-2:]
         return InstAccessOps(ofst=src, size=size)

@@ -26,7 +26,7 @@ class MemoryAllocator:
     # reserved positions: set[tuple[position, size]]
     reserved: set[tuple[int, int]]
 
-    FN_START: ClassVar[int] = 16384 # 0x4000
+    FN_START: ClassVar[int] = 0
 
     def __init__(self):
         self.reserved = set()

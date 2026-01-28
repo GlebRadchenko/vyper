@@ -66,15 +66,6 @@ def _assembly_to_evm(
         elif isinstance(item, PUSHLABEL):
             # push a symbol to stack
             label = item.label
-            if label not in symbol_map:
-                import sys
-                print(f"DEBUG: Missing Label: {label} (hash={hash(label)}, type={type(label)})", file=sys.stderr)
-                # print(f"DEBUG: Symbol Map keys: {[str(k) for k in symbol_map.keys()]}", file=sys.stderr)
-                valid_labels = [k for k in symbol_map.keys() if str(k) == str(label)]
-                print(f"DEBUG: Matching strings in map: {valid_labels}", file=sys.stderr)
-                if valid_labels:
-                     print(f"DEBUG: Mismatch details: map_key_hash={hash(valid_labels[0])}", file=sys.stderr)
-            
             bytecode = _compile_push_instruction(PUSH_N(symbol_map[label], n=SYMBOL_SIZE))
             ret.extend(bytecode)
 

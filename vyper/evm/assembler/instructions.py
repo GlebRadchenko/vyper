@@ -84,8 +84,8 @@ def num_to_bytearray(x):
 
 def PUSH(x):
     bs = num_to_bytearray(x)
-    # Force PUSH1 0x00 for compatibility
-    if len(bs) == 0:
+    # starting in shanghai, can do push0 directly with no immediates
+    if len(bs) == 0 and not version_check(begin="shanghai"):
         bs = [0]
     return [f"PUSH{len(bs)}"] + bs
 
