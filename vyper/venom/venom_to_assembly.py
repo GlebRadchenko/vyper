@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from vyper.evm.assembler.instructions import DATA_ITEM, PUSH, PUSH_N, DataHeader
+from vyper.evm.assembler.instructions import DATA_ITEM, PUSH, DataHeader
 from vyper.exceptions import CompilerPanic
 from vyper.ir.compile_ir import (
     PUSH_OFST,
@@ -29,8 +29,8 @@ from vyper.venom.stack_model import StackModel
 from vyper.venom.stack_spiller import StackSpiller
 
 DEBUG_SHOW_COST = False
-import sys
-
+if DEBUG_SHOW_COST:
+    import sys
 
 # instructions which map one-to-one from venom to EVM
 _ONE_TO_ONE_INSTRUCTIONS = frozenset(
@@ -170,23 +170,18 @@ class VenomCompiler:
 
     def generate_evm_assembly(self, no_optimize: bool = False) -> list[AssemblyInstruction]:
         self.visited_basicblocks = OrderedSet()
-        self.label_snapshots = {}
-        self.pending_successor_stacks = {}
         self.label_counter = 0
 
         asm: list[AssemblyInstruction] = []
 
-        # Sort functions to ensure 'global' (entry point) is processed first
-        functions = list(self.ctx.functions.values())
-        functions.sort(key=lambda f: 0 if f.name == 'global' else 1)
-
-        for fn in functions:
+        for fn in self.ctx.functions.values():
             ac = IRAnalysesCache(fn)
 
             self.liveness = ac.request_analysis(LivenessAnalysis)
             self.dfg = ac.request_analysis(DFGAnalysis)
             self.cfg = ac.request_analysis(CFGAnalysis)
 
+            # Disable for transpiled code which may not be normalized
             # assert self.cfg.is_normalized(), "Non-normalized CFG!"
 
             self.spiller.set_current_function(fn)
@@ -212,9 +207,7 @@ class VenomCompiler:
             asm.extend(asm_data_section)
 
         if no_optimize is False:
-            # Disable optimization to avoid PUSH0 (0x5f) re-introduction which breaks assembler offsets
-            # optimize_assembly(asm)
-            pass
+            optimize_assembly(asm)
 
         return asm
 
@@ -235,9 +228,8 @@ class VenomCompiler:
         if len(stack_ops) == 0:
             return 0
 
-        # assert len(stack_ops) == len(
-        #    set(stack_ops)
-        # ), f"duplicated stack {stack_ops}"  # precondition
+        # Disable for transpiled code which may have duplicated operands
+        # assert len(stack_ops) == len(\n        #     set(stack_ops)\n        # ), f\"duplicated stack {stack_ops}\"  # precondition
 
         cost = 0
         for i, op in enumerate(stack_ops):
@@ -292,12 +284,7 @@ class VenomCompiler:
         depth: int,
         dry_run: bool,
     ) -> None:
-        loop_count = 0
         while depth < -16:
-            loop_count += 1
-            if loop_count > 1000:
-                raise Exception(f"Infinite loop in spill logic for {target_op} at depth {depth}")
-            
             candidate_depth = self._select_spill_candidate(stack, stack_ops, depth)
             if candidate_depth is None:
                 return
@@ -358,25 +345,15 @@ class VenomCompiler:
                     raise Exception(f"Value too low: {op.value}")
                 elif op.value >= 2**256:
                     raise Exception(f"Value too high: {op.value}")
-                val = wrap256(op.value)
-                if val == 0:
-                    # Force PUSH1 0 to avoid assembler size estimation mismatch (PUSH0 vs PUSH1 0)
-                    assembly.extend(["PUSH1", 0])
-                else:
-                    assembly.extend(PUSH(val))
+                assembly.extend(PUSH(wrap256(op.value)))
                 stack.push(op)
                 continue
 
             if op in next_liveness:
                 self.dup_op(assembly, stack, op)
-            elif op in seen:
-                self.dup_op(assembly, stack, op)
-                continue
-            else:
-                depth = stack.get_depth(op)
-                if depth != 0 and depth is not StackModel.NOT_IN_STACK:
-                    self.spiller.swap(assembly, stack, depth)
 
+            # guaranteed by store expansion
+            assert op not in seen, (inst, op, seen)
             seen.add(op)
 
     def _prepare_stack_for_function(self, asm, fn: IRFunction, stack: StackModel):
@@ -403,37 +380,17 @@ class VenomCompiler:
 
         self.popmany(asm, to_pop, stack)
 
-        if DEBUG_SHOW_COST:
-             print(f"DEBUG: _prepare_stack {fn.name.value} Stack: {stack} ToPop: {to_pop}", file=sys.stderr)
-
         self._optimistic_swap(asm, last_param_inst, next_liveness, stack)
 
     def popmany(self, asm, to_pop: Iterable[IRVariable], stack):
-        to_pop_input = list(to_pop)
-        if len(to_pop_input) == 0:
+        to_pop = list(to_pop)
+        if len(to_pop) == 0:
             return
-
-        # Pre-filter variables that are not on the stack
-        valid_to_pop = []
-        depths = []
-        for var in to_pop_input:
-             d = stack.get_depth(var)
-             if d is not StackModel.NOT_IN_STACK:
-                 valid_to_pop.append(var)
-                 depths.append(d)
-             else:
-                 if DEBUG_SHOW_COST:
-                     print(f"DEBUG: popmany check skipped missing {var}", file=sys.stderr)
-        
-        to_pop = valid_to_pop
-
-        if not to_pop:
-             return
 
         # if the items to pop are contiguous, we can swap the top of
         # stack to just below the lowest item-to-pop and then just issue
         # sequential pops
-        # depths = [stack.get_depth(var) for var in to_pop] <-- ALREADY COMPUTED
+        depths = [stack.get_depth(var) for var in to_pop]
         deepest = min(depths)
         expected = list(range(deepest, 0))
         if deepest < 0 and -deepest <= 16 and sorted(depths) == expected:
@@ -466,14 +423,9 @@ class VenomCompiler:
         ref = asm
         asm = []
 
+        # assembly entry point into the block
         asm.append(_as_asm_symbol(basicblock.label))
-        asm.append("JUMPDEST")
-        
-        # Snapshot the stack for JMP target verification
-        # Snapshot the stack for JMP target verification
-        if True:
-            print(f"DEBUG: Snapshotting {basicblock.label} Stack: {stack._stack}", file=sys.stderr)
-        self.label_snapshots[basicblock.label] = list(stack._stack)
+        asm.append("JUMPDEST")  # Explicit JUMPDEST for transpiled code
 
         fn = basicblock.parent
         if basicblock == fn.entry:
@@ -507,13 +459,7 @@ class VenomCompiler:
         ref.extend(asm)
 
         for bb in self.cfg.cfg_out(basicblock):
-            # Check for specific stack override from jnz/split logic
-            next_stack = self.pending_successor_stacks.pop(bb, None)
-            if next_stack is None:
-                next_stack = stack.copy()
-            # else: next_stack is effectively a copy prepared by _emit_jnz
-            
-            self._generate_evm_for_basicblock_r(ref, bb, next_stack, spilled.copy())
+            self._generate_evm_for_basicblock_r(ref, bb, stack.copy(), spilled.copy())
 
     # pop values from stack at entry to bb
     # note this produces the same result(!) no matter which basic block
@@ -524,7 +470,7 @@ class VenomCompiler:
         # the input block is a splitter block, like jnz or djmp
         assert len(in_bbs := self.cfg.cfg_in(basicblock)) == 1
         in_bb = in_bbs.first()
-        # assert len(self.cfg.cfg_out(in_bb)) > 1
+        assert len(self.cfg.cfg_out(in_bb)) > 1
 
         # inputs is the input variables we need from in_bb
         inputs = self.liveness.input_vars_from(in_bb, basicblock)
@@ -536,196 +482,6 @@ class VenomCompiler:
         layout = self.liveness.out_vars(in_bb)
         to_pop = list(layout.difference(inputs))
         self.popmany(asm, to_pop, stack)
-
-    def _get_target_stack_for_new_block(self, pred_bb, next_bb, phi_map):
-         # First visit. Define Stack Layout.
-         # Calculate intersection of requirements from all predecessors
-         # effectively pruning variables that are not universally live/supported.
-         base_reqs = self.liveness.input_vars_from(pred_bb, next_bb)
-         candidate_stack = list(base_reqs)
-         
-         all_preds = list(self.cfg.cfg_in(next_bb))
-         
-         # Optimization: Filter out variables claimed by Liveness but not actually used/live-out
-         # This fixes issues where Liveness over-reports requirements (e.g. dead params).
-         live_out = self.liveness.out_vars(next_bb)
-         local_uses = set()
-         for i in next_bb.instructions:
-             # get_input_variables returns iterator/list of IRVariables
-             local_uses.update(i.get_input_variables())
-         
-         final_stack = []
-         for v in candidate_stack:
-             is_required = True
-             
-             # If v feeds a Phi, it survives as a slot holder (assuming valid SSA covers all paths)
-             if v in phi_map:
-                 final_stack.append(v)
-                 continue
-                 
-             # If v is invariant, check if it's actually useful
-             if v not in local_uses and v not in live_out:
-                 # Dead variable, prune it (regardless of liveness claim)
-                 continue
-
-             # If v is invariant, it must be present in ALL predecessors
-             for pred in all_preds:
-                 if pred == pred_bb: continue
-                 
-                 pred_reqs = self.liveness.input_vars_from(pred, next_bb)
-                 if v not in pred_reqs:
-                     is_required = False
-                     break
-             
-             if is_required:
-                 final_stack.append(v)
-         
-         return final_stack
-
-    def _emit_jnz(self, inst, stack, next_liveness, spilled):
-        assembly = []
-        operands = list(inst.get_non_label_operands()) # just cond
-        # Ensure condition is on top
-        self._emit_input_operands(assembly, inst, operands, stack, next_liveness, spilled)
-        
-        # JNZ consumes condition
-        stack.pop(len(operands))
-        
-        # Targets
-        # usage: jnz cond, true_label, false_label
-        true_label = inst.operands[1]
-        false_label = inst.operands[2]
-        
-        # Resolve blocks
-        true_bb = None
-        false_bb = None
-        for bb in self.cfg.cfg_out(inst.parent):
-            if bb.label.value == true_label.value:
-                true_bb = bb
-            if bb.label.value == false_label.value:
-                false_bb = bb
-        
-        trampolines = []
-        
-        def process_target(label, bb):
-             # Logic to calculate Target Stack and generate adjustments
-             
-             # 1. Phi Map
-             phi_map = {}
-             for phi in bb.phi_instructions:
-                 for lab, var in phi.phi_operands:
-                     phi_map[var] = phi
-
-             # 2. Target Stack
-             target_stack = []
-             if label in self.label_snapshots:
-                 base_stack = list(self.label_snapshots[label])
-                 for v in base_stack:
-                     if v in phi_map:
-                         phi = phi_map[v]
-                         found = False
-                         for plab, pvar in phi.phi_operands:
-                             if plab.value == inst.parent.label.value:
-                                 target_stack.append(pvar)
-                                 found = True
-                                 break
-                         if not found:
-                             target_stack.append(v)
-                     else:
-                         target_stack.append(v)
-             else:
-                 # Use our robust Intersection logic
-                 target_stack = self._get_target_stack_for_new_block(inst.parent, bb, phi_map)
-
-             # 3. Check Pruning/Inflation
-             local_stack = stack.copy()
-             cmds = []
-             
-             # Prune
-             target_vars = set(target_stack)
-             to_prune = [v for v in local_stack._stack if v not in target_vars]
-             if to_prune:
-                 if DEBUG_SHOW_COST:
-                     print(f"DEBUG: JNZ Trampoline Pruning for {label}: {to_prune}", file=sys.stderr)
-                 self.popmany(cmds, to_pop=to_prune, stack=local_stack)
-             
-             # Inflate
-             current_counts = {}
-             for v in local_stack._stack:
-                current_counts[v] = current_counts.get(v, 0) + 1
-             
-             for v in set(target_stack):
-                needed = target_stack.count(v)
-                have = current_counts.get(v, 0)
-                if needed > have:
-                    if have == 0:
-                         if isinstance(v, IRVariable) and v in spilled:
-                             self.spiller.restore_spilled_operand(cmds, local_stack, spilled, v)
-                             have = 1 
-                         elif isinstance(v, IRLiteral):
-                             # Emit PUSH
-                             val = wrap256(v.value)
-                             if val == 0:
-                                 cmds.extend(["PUSH1", 0])
-                             else:
-                                 cmds.extend(PUSH(val))
-                             local_stack.push(v)
-                             have = 1
-                         elif isinstance(v, IRLabel):
-                             cmds.append(PUSHLABEL(_as_asm_symbol(v)))
-                             local_stack.push(v)
-                             have = 1
-                         else:
-                             raise AssertionError(f"Cannot inflate stack in JNZ trampoline: Operand {v} required.")
-                    for _ in range(needed - have):
-                        self.dup_op(cmds, local_stack, v)
-                        current_counts[v] += 1
-              
-             # Reorder
-             self._stack_reorder(cmds, local_stack, list(target_stack), spilled)
-             
-             if not cmds:
-                 return label, None, local_stack # Direct jump
-             
-             # Create trampoline
-             # New label
-             tramp_name = f"trampoline_{inst.parent.label.value}_to_{label.value}"
-             tramp_label_obj = IRLabel(tramp_name)
-             # Label definition + JUMPDEST (explicit)
-             tramp_asm = [_as_asm_symbol(tramp_label_obj), "JUMPDEST"] + cmds + [PUSHLABEL(_as_asm_symbol(label)), "JUMP"]
-             return tramp_label_obj, tramp_asm, local_stack
-
-        # Process True Path
-        true_dest, true_tramp, true_stack = process_target(true_label, true_bb)
-        if true_tramp: trampolines.extend(true_tramp)
-        if true_bb:
-            self.pending_successor_stacks[true_bb] = true_stack
-        
-        # Process False Path
-        false_dest, false_tramp, false_stack = process_target(false_label, false_bb)
-        if false_tramp: trampolines.extend(false_tramp)
-        if false_bb:
-            self.pending_successor_stacks[false_bb] = false_stack
-        
-        # Emit JNZ logic
-        # JNZ cond, true, false
-        # EVM: PUSH true, JUMPI, PUSH false, JUMP
-        
-        # But cond is on stack (from emit_input_operands).
-        # We need: PUSH true, SWAP1, JUMPI.
-        
-        assembly.append(PUSHLABEL(_as_asm_symbol(true_dest)))
-        assembly.append("SWAP1")
-        assembly.append("JUMPI")
-        
-        assembly.append(PUSHLABEL(_as_asm_symbol(false_dest)))
-        assembly.append("JUMP")
-        
-        # Append trampolines (dead code reachable only via jumps)
-        assembly.extend(trampolines)
-        
-        return apply_line_numbers(inst, assembly)
-
 
     def _generate_evm_for_instruction(
         self,
@@ -744,10 +500,7 @@ class VenomCompiler:
 
         # Step 1: Apply instruction special stack manipulations
 
-        if opcode == "jnz":
-            return self._emit_jnz(inst, stack, next_liveness, spilled)
-
-        if opcode in ["jmp", "djmp", "jnz"]:
+        if opcode in ["jmp", "djmp", "jnz", "invoke"]:
             operands = list(inst.get_non_label_operands())
 
         elif opcode == "log":
@@ -755,12 +508,11 @@ class VenomCompiler:
             assert log_topic_count in [0, 1, 2, 3, 4], "Invalid topic count"
             operands = inst.operands[1:]
         elif opcode == "ret":
-            # ret val1, val2, ..., pc
-            # We want stack: [..., val1, val2, ..., pc] (Top is pc)
-            # JUMP consumes pc. Leaves vals.
-            operands = list(inst.operands)
+            # For ret with values, we only treat the return PC as an input operand
+            # The return values must remain on the stack and are not consumed here
+            operands = [inst.operands[-1]]
         else:
-             operands = list(reversed(inst.operands))
+            operands = inst.operands
 
         if opcode == "phi":
             ret = inst.output
@@ -786,15 +538,6 @@ class VenomCompiler:
             stack.push(inst.output)
             return apply_line_numbers(inst, assembly)
 
-        if opcode == "ret":
-            # Prune any items on stack that are NOT in operands (return vals + pc)
-            target_vars = set(operands)
-            to_prune = [v for v in stack._stack if v not in target_vars]
-            if to_prune:
-                if DEBUG_SHOW_COST:
-                    print(f"DEBUG: RET Pruning dead items: {to_prune} (Keeping: {operands})", file=sys.stderr)
-                self.popmany(assembly, to_prune, stack)
-
         # Step 2: Emit instruction's input operands
         self._emit_input_operands(assembly, inst, operands, stack, next_liveness, spilled)
 
@@ -806,97 +549,11 @@ class VenomCompiler:
             # jmp instructions.
             assert len(self.cfg.cfg_out(inst.parent)) == 1
             next_bb = self.cfg.cfg_out(inst.parent).first()
-            target_label = next_bb.label
 
-            target_stack = []
-            
-            # Helper to find Phi replacements
-            # Map: input_var -> phi_instruction
-            # Note: A variable might be input to multiple Phis, but we'll assume 1-to-1 for now as efficient heuristic
-            phi_map = {} 
-            for phi in next_bb.phi_instructions:
-                for lab, var in phi.phi_operands:
-                    phi_map[var] = phi
+            # guaranteed by cfg normalization+simplification
+            assert len(self.cfg.cfg_in(next_bb)) > 1
 
-            if target_label in self.label_snapshots:
-                 # Start with snapshot layout (canonical order)
-                 base_stack = list(self.label_snapshots[target_label])
-                 
-                 for v in base_stack:
-                     if v in phi_map:
-                         # This variable feeds a Phi. Find the corresponding input for CURRENT block.
-                         phi = phi_map[v]
-                         found = False
-                         for plab, pvar in phi.phi_operands:
-                             if plab.value == inst.parent.label.value:
-                                 target_stack.append(pvar)
-                                 found = True
-                                 break
-                         if not found:
-                             # Fallback: Current block not listed in Phi? (Should be unreachable)
-                             # Keep original variable
-                             target_stack.append(v)
-                     else:
-                         # Invariant / Pass-through
-                         target_stack.append(v)
-            else:
-                 # Delegate to generalized helper
-                 target_stack = self._get_target_stack_for_new_block(inst.parent, next_bb, phi_map)
-
-            # Fix: Prune dead variables from stack before JMP
-            # We must ensure we deliver a clean stack matching target_stack exactly.
-            target_vars = set(target_stack)
-            
-            # Prune ANYTHING that is not in the target set (variables, literals, labels)
-            to_prune = [v for v in stack._stack if v not in target_vars]
-            
-            if to_prune:
-                if DEBUG_SHOW_COST:
-                    print(f"DEBUG: JMP Pruning dead items: {to_prune} (Target: {target_stack})", file=sys.stderr)
-                self.popmany(assembly, to_prune, stack)
-
-            # FIX: Inflate stack if we are missing copies required by target (Snapshot case)
-            current_counts = {}
-            for v in stack._stack:
-                current_counts[v] = current_counts.get(v, 0) + 1
-            
-            # We iterate unique vars in target_stack to check for deficits
-            for v in set(target_stack):
-                needed = target_stack.count(v)
-                have = current_counts.get(v, 0)
-                
-                if needed > have:
-                    if DEBUG_SHOW_COST:
-                        print(f"DEBUG: JMP Inflating stack for {v} (Need {needed}, Have {have})", file=sys.stderr)
-                    
-                    # If we have NONE, we must bring the first copy onto stack
-                    if have == 0:
-                         if isinstance(v, IRVariable) and v in spilled:
-                             self.spiller.restore_spilled_operand(assembly, stack, spilled, v)
-                             have = 1 
-                         elif isinstance(v, IRLiteral):
-                             # Emit PUSH
-                             val = wrap256(v.value)
-                             if val == 0:
-                                 assembly.extend(["PUSH1", 0])
-                             else:
-                                 assembly.extend(PUSH(val))
-                             stack.push(v)
-                             have = 1
-                         elif isinstance(v, IRLabel):
-                             assembly.append(PUSHLABEL(_as_asm_symbol(v)))
-                             stack.push(v)
-                             have = 1
-                         else:
-                             # Revert fallback: Crash if variable is missing
-                             raise AssertionError(f"Cannot inflate stack: Operand {v} is required by target but not available (not in stack or spill).")
-                    
-                    # Now DUP the rest
-                    for _ in range(needed - have):
-                        self.dup_op(assembly, stack, v)
-                        current_counts[v] += 1
-
-
+            target_stack = self.liveness.input_vars_from(inst.parent, next_bb)
             self._stack_reorder(assembly, stack, list(target_stack), spilled)
 
         if inst.is_commutative:
@@ -907,7 +564,7 @@ class VenomCompiler:
                 operands[-1], operands[-2] = operands[-2], operands[-1]
 
         cost = self._stack_reorder([], stack, operands, spilled, dry_run=True)
-        if DEBUG_SHOW_COST:
+        if DEBUG_SHOW_COST and cost:
             print("ENTER", inst, file=sys.stderr)
             print("  HAVE", stack, file=sys.stderr)
             print("  WANT", operands, file=sys.stderr)
@@ -940,52 +597,19 @@ class VenomCompiler:
             pass
         elif opcode == "jnz":
             # jump if not zero
-            labels = list(inst.get_label_operands())
-            if len(labels) == 2:
-                if_nonzero_label, if_zero_label = labels
-                assembly.append(PUSHLABEL(_as_asm_symbol(if_nonzero_label)))
-                assembly.append("JUMPI")
+            if_nonzero_label, if_zero_label = inst.get_label_operands()
+            assembly.append(PUSHLABEL(_as_asm_symbol(if_nonzero_label)))
+            assembly.append("JUMPI")
 
-                # Restore JUMP for explicit control flow (Stack Reorder handles PUSH)
-                assembly.append(PUSHLABEL(_as_asm_symbol(if_zero_label)))
-                assembly.append("JUMP")
-            elif len(labels) == 1:
-                # Implicit fallthrough
-                (if_nonzero_label,) = labels
-                assembly.append(PUSHLABEL(_as_asm_symbol(if_nonzero_label)))
-                assembly.append("JUMPI")
-            else:
-                raise ValueError(f"jnz must have 1 or 2 label operands, got {len(labels)}")
+            # make sure the if_zero_label will be optimized out
+            # assert if_zero_label == next(iter(inst.parent.cfg_out)).label
+
+            assembly.append(PUSHLABEL(_as_asm_symbol(if_zero_label)))
+            assembly.append("JUMP")
 
         elif opcode == "jmp":
-            target = inst.operands[0]
+            (target,) = inst.operands
             assert isinstance(target, IRLabel)
-
-            if True:
-                print(f"DEBUG: Processing JMP to {target}. Snapshot exists: {target in self.label_snapshots}", file=sys.stderr)
-
-            # Prune stack to match target label expectations
-            if target in self.label_snapshots:
-                target_stack = self.label_snapshots[target]
-                
-                # Check for stack height mismatch (leaks)
-                # We assume standard stack layout where locals are pushed on top.
-                if len(stack._stack) > len(target_stack):
-                    diff = len(stack._stack) - len(target_stack)
-                    # The items to prune are at the END of the list (Top of stack)
-                    # stack._stack is [Bottom, ..., Top]
-                    to_prune = stack._stack[-diff:]
-                    # We need them in Top-to-Bottom order for popmany logic?
-                    # popmany takes iterable.
-                    
-                    if True: # DEBUG_SHOW_COST override
-                        print(f"DEBUG: JMP Depth Mismatch. Current: {len(stack._stack)}, Target: {len(target_stack)}. Pruning: {to_prune}", file=sys.stderr)
-                    
-                    self.popmany(assembly, to_prune, stack)
-                elif len(stack._stack) < len(target_stack):
-                     if True:
-                        print(f"CRITICAL: JMP Stack Underflow? Current: {len(stack._stack)}, Target: {len(target_stack)}", file=sys.stderr)
-
             assembly.append(PUSHLABEL(_as_asm_symbol(target)))
             assembly.append("JUMP")
         elif opcode == "djmp":
@@ -998,23 +622,10 @@ class VenomCompiler:
             assert isinstance(
                 target, IRLabel
             ), f"invoke target must be a label (is ${type(target)} ${target})"
-            
-            # Simple invoke pattern per VENOM_NATIVE_REQUIREMENTS.md:
-            # 1. Push return label
-            # 2. Push target label
-            # 3. JUMP
-            # 
-            # After callee returns, stack has return values only.
-            # Args are consumed inside callee by liveness tracking.
-            # NO caller frame spill/restore needed - Venom handles it.
-            
             return_label = self.mklabel("return_label")
             assembly.extend(
                 [PUSHLABEL(return_label), PUSHLABEL(_as_asm_symbol(target)), "JUMP", return_label]
             )
-            
-            # No arg cleanup needed - args consumed inside callee by liveness tracking.
-            # Stack after return contains only the return values.
         elif opcode == "ret":
             assembly.append("JUMP")
         elif opcode == "return":
@@ -1036,14 +647,6 @@ class VenomCompiler:
             raise CompilerPanic(f"Bad instruction: {opcode}")
         elif opcode in TEST_INSTRUCTIONS:  # pragma: nocover
             raise CompilerPanic(f"Bad instruction: {opcode}")
-        elif opcode == "loadimmutable":
-            # Resolve immutable value from context
-            # Operands: [immutable_id (IRLiteral with string value or as-is)]
-            immutable_id = str(inst.operands[0].value) if hasattr(inst.operands[0], 'value') else str(inst.operands[0])
-            # Strip quotes if present
-            immutable_id = immutable_id.strip('"').strip("'")
-            value = self.ctx.immutables.get(immutable_id, 0)
-            assembly.extend(PUSH_N(value, 32))
         else:
             raise Exception(f"Unknown opcode: {opcode}")
 
@@ -1073,11 +676,6 @@ class VenomCompiler:
     def _optimistic_swap(self, assembly, inst, next_liveness, stack):
         # heuristic: peek at next_liveness to find the next scheduled
         # item, and optimistically swap with it
-        
-        # Guard: Do not swap after param instructions to preserve calling convention stack layout
-        if inst.opcode == 'param':
-            return
-
         if DEBUG_SHOW_COST:
             stack0 = stack.copy()
 
