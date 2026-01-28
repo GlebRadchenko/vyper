@@ -32,7 +32,7 @@ from vyper.venom.passes import (
 
 # Standard optimizations (default)
 PASSES_O2: List[PassConfig] = [
-    FixMemLocationsPass,
+    # FixMemLocationsPass,
     FloatAllocas,
     SimplifyCFGPass,
     Mem2Var,

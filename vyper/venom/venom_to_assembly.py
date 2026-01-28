@@ -106,6 +106,15 @@ _ONE_TO_ONE_INSTRUCTIONS = frozenset(
         "prevrandao",
         "difficulty",
         "invalid",
+        "sha3",
+        "return",
+        "log0",
+        "log1",
+        "log2",
+        "log3",
+        "log4",
+        "mstore8",
+        "pop",
     ]
 )
 
