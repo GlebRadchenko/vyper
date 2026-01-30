@@ -550,8 +550,9 @@ class VenomCompiler:
             assert log_topic_count in [0, 1, 2, 3, 4], "Invalid topic count"
             operands = inst.operands[1:]
         elif opcode == "ret":
-            # For ret with values, we only treat the return PC as an input operand
-            # The return values must remain on the stack and are not consumed here
+            # For ret with values, we only treat the return PC as an input operand.
+            # The return values must remain on the stack and are not consumed here.
+            # Convention: PC is the last operand in internal representation.
             operands = [inst.operands[-1]]
         else:
             operands = inst.operands
