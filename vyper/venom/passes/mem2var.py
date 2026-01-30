@@ -59,10 +59,6 @@ class Mem2Var(IRPass):
         if not all2(inst.opcode in ["mstore", "mload", "return"] for inst in uses):
             return
 
-        # Initialize the variable to 0 to avoid undefined variable issues in SSA
-        # (e.g. if the original code reads memory before writing, or if strict dominance check fails)
-        self.updater.add_after(alloca_inst, "assign", [IRLiteral(0)], new_output=var)
-
         assert isinstance(size_lit, IRLiteral)
         size = size_lit.value
 

@@ -33,11 +33,9 @@ from vyper.venom.passes import (
     SingleUseExpansion,
 )
 
-
-
 # Aggressive optimizations (O3)
 PASSES_O3: List[PassConfig] = [
-    # FixMemLocationsPass,
+    FixMemLocationsPass,
     FloatAllocas,
     SimplifyCFGPass,
     MakeSSA,

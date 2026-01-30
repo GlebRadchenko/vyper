@@ -123,14 +123,9 @@ def run_passes_on(ctx: IRContext, flags: VenomOptimizationFlags) -> None:
     assert ctx.entry_function is not None
     fcg = ir_analyses[ctx.entry_function].force_analysis(FCGAnalysis)
 
-    # DCE (Dead Code Elimination) is disabled for Yul-transpiled code.
-    # Reason: FCGAnalysis identifies "unreachable" functions based on internal call graph,
-    # but Yul code contains external callback functions (e.g., uniswapV2Call, solidlyV3FlashCallback)
-    # that are invoked by external contracts, not by internal code paths.
-    # Removing these would break the contract at runtime.
-    # TODO: Implement callback detection heuristic or whitelist for DCE.
-    # for fn in fcg.get_unreachable_functions():
-    #     ctx.remove_function(fn)
+    # Remove functions not reachable from entry.
+    for fn in fcg.get_unreachable_functions():
+        ctx.remove_function(fn)
 
     _run_fn_passes(ctx, fcg, ctx.entry_function, flags, ir_analyses)
 

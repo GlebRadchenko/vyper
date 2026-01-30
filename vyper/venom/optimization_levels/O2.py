@@ -33,9 +33,15 @@ from vyper.venom.passes import (
 
 # Standard optimizations (default)
 PASSES_O2: List[PassConfig] = [
-    # FixMemLocationsPass,
+    FixMemLocationsPass,
     FloatAllocas,
     SimplifyCFGPass,
+    MakeSSA,
+    PhiEliminationPass,
+    AlgebraicOptimizationPass,
+    SCCP,
+    SimplifyCFGPass,
+    AssignElimination,
     Mem2Var,
     MakeSSA,
     PhiEliminationPass,
@@ -72,7 +78,6 @@ PASSES_O2: List[PassConfig] = [
     PhiEliminationPass,
     AssignElimination,
     CSE,
-    AssignElimination,
     AssignElimination,
     RemoveUnusedVariablesPass,
     SingleUseExpansion,

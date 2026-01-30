@@ -100,8 +100,6 @@ class FunctionInlinerPass(IRGlobalPass):
                     # inlined any callsites (see demotion of calloca
                     # to alloca below). this handles both cases.
                     if inst.opcode in ("alloca", "calloca"):
-                        if len(inst.operands) < 2:
-                             continue
                         assert len(inst.operands) >= 2, inst
                         alloca_id_op = inst.operands[1]
                         alloca_id = alloca_id_op.value

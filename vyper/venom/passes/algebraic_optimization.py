@@ -346,9 +346,6 @@ class AlgebraicOptimizationPass(IRPass):
             self._optimize_comparator_instruction(inst, prefer_iszero)
 
     def _optimize_comparator_instruction(self, inst, prefer_iszero):
-        # DISABLED: Faulty logic for slt/sgt (off-by-one errors)
-        return
-        
         opcode, operands = inst.opcode, inst.operands
         assert opcode in COMPARATOR_INSTRUCTIONS  # sanity
         inst_out = inst.output

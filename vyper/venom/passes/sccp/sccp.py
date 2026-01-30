@@ -263,10 +263,6 @@ class SCCP(IRPass):
             # If any operand is TOP the operation is TOP
             if eval_result is LatticeEnum.TOP:
                 return finalize(LatticeEnum.TOP)
-            
-            # If the variable resolved to a Label data item, we can't do arithmetic on it
-            if isinstance(eval_result, IRLabel):
-                 return finalize(LatticeEnum.BOTTOM)
 
             assert isinstance(eval_result, IRLiteral), (inst.parent.label, op, inst, eval_result)
             ops.append(eval_result)
