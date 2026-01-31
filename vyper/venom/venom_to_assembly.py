@@ -674,33 +674,8 @@ class VenomCompiler:
         elif opcode == "param":
             pass
         elif opcode == "assign":
-            # Assign is a NOP in EVM - no actual stack operations occur.
-            # But the stack model was updated via pop+push in Step 4.
-            # This is WRONG for assigns because the physical stack position doesn't change.
-            # We need to UNDO the pop+push and instead use poke to rename in-place.
-            # 
-            # The assign %66 = %21 means: wherever %21 is on the stack, rename it to %66.
-            # Step 4 already did: pop(%21) + push(%66)
-            # To fix, we need to:
-            # 1. Find where %21 WAS (now it's gone from model after pop, but %66 is at top)
-            # 2. Swap %66 back to where %21 was
-            # 
-            # Actually, the cleanest fix is to handle assigns BEFORE Step 4 runs.
-            # But that requires restructuring the code.
-            # 
-            # For now, we'll emit a swap to move %66 to the correct physical position.
-            # 
-            # Wait - this is getting complicated. Let me rethink...
-            # 
-            # The core issue: Step 4 pops operand and pushes output.
-            # For `%66 = %21`, stack [... %21 ...] becomes [... %66] (at top).
-            # But EVM stack is unchanged! So model and physical are out of sync.
-            # 
-            # The proper fix: assigns should skip Step 4 entirely and use poke.
-            # But we're IN Step 5 now, AFTER Step 4 already ran.
-            # 
-            # For now, just document this is a known issue and the proper fix
-            # requires moving assign handling to be a special case before Step 4.
+            # Assign handling is done earlier (before Step 4) using poke to rename in-place.
+            # If we reach here, the source was a constant and was handled by the normal path.
             pass
         elif opcode == "dbname":
             pass
