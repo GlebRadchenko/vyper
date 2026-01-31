@@ -487,11 +487,11 @@ class VenomCompiler:
             else:
                 next_liveness = self.liveness.out_vars(basicblock)
 
-            asm.extend(
-                self._generate_evm_for_instruction(
+            inst_asm = self._generate_evm_for_instruction(
                     inst, stack, next_liveness, spilled, is_halting_block
                 )
-            )
+            
+            asm.extend(inst_asm)
 
 
         if DEBUG_SHOW_COST:
@@ -611,13 +611,12 @@ class VenomCompiler:
                     assembly.append("PUSH0")
                     stack.push(dest)
                 else:
-                    # Debug for assign
+                    # Source is a variable - rename in-place using poke
                     # If the source is still live after this assign, DUP it
                     if source in next_liveness:
                         self.spiller.dup(assembly, stack, depth)
                         stack.poke(0, dest)
                     else:
-                        # Just rename the source to dest in the stack model
                         stack.poke(depth, dest)
                 return apply_line_numbers(inst, assembly)
 
