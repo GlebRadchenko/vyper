@@ -53,6 +53,11 @@ _writes = {
     "create2": ALL ^ (MEMORY | IMMUTABLES),
     "invoke": ALL,  # could be smarter, look up the effects of the invoked function
     "log": LOG,
+    "log0": LOG,
+    "log1": LOG,
+    "log2": LOG,
+    "log3": LOG,
+    "log4": LOG,
     "dloadbytes": MEMORY,
     "dload": MEMORY,
     "returndatacopy": MEMORY,
@@ -83,6 +88,11 @@ _reads = {
     "extcodehash": EXTCODE,
     "selfdestruct": BALANCE,  # may modify code, but after the transaction
     "log": MEMORY,
+    "log0": MEMORY,
+    "log1": MEMORY,
+    "log2": MEMORY,
+    "log3": MEMORY,
+    "log4": MEMORY,
     "revert": MEMORY,
     "sha3": MEMORY,
     "msize": MSIZE,
