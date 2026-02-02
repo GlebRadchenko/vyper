@@ -116,6 +116,7 @@ _ONE_TO_ONE_INSTRUCTIONS = frozenset(
         "log4",
         "mstore8",
         "pop",
+        "byte",
     ]
 )
 
