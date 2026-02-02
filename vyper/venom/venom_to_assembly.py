@@ -229,11 +229,9 @@ class VenomCompiler:
         if len(stack_ops) == 0:
             return 0
 
-        # Check for duplicate literals. Literals can be duplicated (e.g., revert 0, 0)
-        # because they don't have live values - we just push them multiple times.
-        # For reordering, we need unique operands, so we track and push duplicates separately.
-        seen_literals = {}  # literal value -> index of first occurrence
-        duplicate_literal_indices = []  # indices of duplicate literals to push separately
+        # Handle duplicate literals (e.g., revert(0, 0)) - can't reorder duplicates directly.
+        seen_literals = {}
+        duplicate_literal_indices = []
         
         for i, op in enumerate(stack_ops):
             if isinstance(op, IRLiteral):
@@ -242,27 +240,18 @@ class VenomCompiler:
                 else:
                     seen_literals[op.value] = i
         
-        # If we have duplicate literals, we need to handle them specially
         if duplicate_literal_indices:
-            # Create a deduplicated list for reordering
+            # Reorder unique operands first
             deduped_ops = [op for i, op in enumerate(stack_ops) if i not in duplicate_literal_indices]
+            cost = self._stack_reorder(assembly, stack, deduped_ops, spilled, dry_run) if deduped_ops else 0
             
-            # First, reorder the unique operands
-            if deduped_ops:
-                cost = self._stack_reorder(assembly, stack, deduped_ops, spilled, dry_run)
-            else:
-                cost = 0
-            
-            # Then push the duplicate literals in correct order
-            # We need to push them at the right stack positions
+            # Push duplicates at their required positions
             for dup_idx in duplicate_literal_indices:
                 op = stack_ops[dup_idx]
                 if not dry_run:
-                    # Push the literal value to stack using standard PUSH pattern
                     assembly.extend(PUSH(wrap256(op.value)))
                     stack.push(op)
                 
-                # Swap to correct position if needed
                 final_depth = -(len(stack_ops) - dup_idx - 1)
                 if final_depth != 0:
                     cost += self.spiller.swap(assembly, stack, final_depth, dry_run)
@@ -582,38 +571,22 @@ class VenomCompiler:
             stack.push(inst.output)
             return apply_line_numbers(inst, assembly)
 
-        # Assign is a NOP in EVM: the source variable's stack slot just gets renamed
-        # to the destination variable. No actual EVM instructions are emitted.
-        # We use poke to rename in-place, like phi does, to keep the stack model
-        # in sync with the physical EVM stack.
-        # 
-        # Exception: if the source is a constant (literal), we need to PUSH it.
+        # Assign: rename stack slot in-place using poke. Literals fall through to normal path.
         if opcode == "assign":
             source = inst.operands[0]
             dest = inst.output
             
-            # Check if source is a constant (not an IRVariable)
             if not isinstance(source, IRVariable):
-                # Source is a constant - push it onto the stack
-                # The normal path (Steps 2-5) will handle this correctly:
-                # Step 2 will prepare the operand (push constant)
-                # Step 4 will pop and push (net effect: constant at top as dest)
-                # Step 5 will be a NOP
-                # So we DON'T return early here - let the normal path handle it
+                # Literal source: let normal path handle
                 pass
             else:
-                # Source is a variable - rename in-place using poke
                 depth = stack.get_depth(source)
                 if depth is StackModel.NOT_IN_STACK:
-                    # Source was already popped as dead. The assign can't produce
-                    # a meaningful result. This shouldn't happen in well-formed IR.
-                    # But if it does, we need to still put SOMETHING on the stack
-                    # if dest is expected. For now, push a PUSH0 as placeholder.
+                    # Source dead - push placeholder
                     assembly.append("PUSH0")
                     stack.push(dest)
                 else:
-                    # Source is a variable - rename in-place using poke
-                    # If the source is still live after this assign, DUP it
+                    # DUP if source still live, then rename
                     if source in next_liveness:
                         self.spiller.dup(assembly, stack, depth)
                         stack.poke(0, dest)
@@ -675,8 +648,7 @@ class VenomCompiler:
         elif opcode == "param":
             pass
         elif opcode == "assign":
-            # Assign handling is done earlier (before Step 4) using poke to rename in-place.
-            # If we reach here, the source was a constant and was handled by the normal path.
+            # Handled earlier via poke; here only for literal sources.
             pass
         elif opcode == "dbname":
             pass
@@ -769,8 +741,7 @@ class VenomCompiler:
 
         if next_inst.is_bb_terminator:
             return
-        # Skip optimistic swap if next instruction is ASSIGN - assigns are NOPs that
-        # don't consume their operand from stack top (they use poke to rename in-place)
+        # Skip for assign - it uses poke, not stack top
         if next_inst.opcode == "assign":
             return
         # if there are no live vars at the next point, nothing to schedule

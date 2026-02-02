@@ -113,11 +113,8 @@ class LivenessAnalysis(IRAnalysis):
 
                 for label, var in inst.phi_operands:
                     if label == source.label:
-                        # FIX: Remove and re-add to ensure phi operands are in
-                        # PHI DEFINITION ORDER. OrderedSet.add() doesn't reorder
-                        # existing elements, so we must remove first.
-                        # This is critical for nested loops where phi operands
-                        # may already be in liveness from previous iterations.
+                        # Remove then re-add to preserve phi definition order.
+                        # OrderedSet.add() won't reorder existing elements.
                         if var in liveness:
                             liveness.remove(var)
                         liveness.add(var)
