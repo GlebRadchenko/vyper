@@ -229,76 +229,72 @@ class VenomCompiler:
         if len(stack_ops) == 0:
             return 0
 
-        # Handle duplicate literals (e.g., revert(0, 0)) - can't reorder duplicates directly.
-        seen_literals = {}
-        duplicate_literal_indices = []
-        
-        for i, op in enumerate(stack_ops):
-            if isinstance(op, IRLiteral):
-                if op.value in seen_literals:
-                    duplicate_literal_indices.append(i)
-                else:
-                    seen_literals[op.value] = i
-        
-        if duplicate_literal_indices:
-            # Reorder unique operands first
-            deduped_ops = [op for i, op in enumerate(stack_ops) if i not in duplicate_literal_indices]
-            cost = self._stack_reorder(assembly, stack, deduped_ops, spilled, dry_run) if deduped_ops else 0
-            
-            # Push duplicates at their required positions
-            for dup_idx in duplicate_literal_indices:
-                op = stack_ops[dup_idx]
-                if not dry_run:
-                    assembly.extend(PUSH(wrap256(op.value)))
-                    stack.push(op)
-                
-                final_depth = -(len(stack_ops) - dup_idx - 1)
-                if final_depth != 0:
-                    cost += self.spiller.swap(assembly, stack, final_depth, dry_run)
-            
-            return cost
+        # NOTE: Duplicate literal handling has been migrated to the transpiler.
+        # The transpiler (ir/basicblock.py append_instruction) now materializes
+        # duplicate literals as unique IRVariables before emitting instructions.
+        # This eliminates the need for backend deduplication logic.
 
         assert len(stack_ops) == len(
             set(stack_ops)
         ), f"duplicated stack {stack_ops}"  # precondition
 
         cost = 0
-        for i, op in enumerate(stack_ops):
-            final_stack_depth = -(len(stack_ops) - i - 1)
-
-            depth = stack.get_depth(op)
-
-            if depth == StackModel.NOT_IN_STACK:
-                if isinstance(op, IRVariable) and op in spilled:
-                    self.spiller.restore_spilled_operand(
-                        assembly, stack, spilled, op, dry_run=dry_run
+        
+        # Iterative reorder: continue until all operands are in correct positions.
+        # Spilling/swapping one operand can displace others already positioned,
+        # so we must re-verify and re-position until stable.
+        max_iterations = len(stack_ops) * 3  # Safety limit
+        iteration = 0
+        
+        while iteration < max_iterations:
+            # Check if all operands are already in correct positions
+            all_correct = True
+            for i, op in enumerate(stack_ops):
+                expected_depth = -(len(stack_ops) - i - 1)
+                actual_depth = stack.get_depth(op)
+                if actual_depth != expected_depth:
+                    all_correct = False
+                    break
+            
+            if all_correct:
+                break
+            
+            iteration += 1
+            
+            for i, op in enumerate(stack_ops):
+                final_stack_depth = -(len(stack_ops) - i - 1)
+                depth = stack.get_depth(op)
+                
+                if depth == StackModel.NOT_IN_STACK:
+                    if isinstance(op, IRVariable) and op in spilled:
+                        self.spiller.restore_spilled_operand(
+                            assembly, stack, spilled, op, dry_run=dry_run
+                        )
+                        depth = stack.get_depth(op)
+                    else:  # pragma: nocover
+                        raise CompilerPanic(f"Variable {op} not in stack")
+                
+                if depth < -16:
+                    # Spill to bring target within SWAP16 range
+                    self._reduce_depth_via_spill(
+                        assembly, stack, spilled, stack_ops, op, depth, dry_run
                     )
                     depth = stack.get_depth(op)
-                else:  # pragma: nocover
-                    raise CompilerPanic(f"Variable {op} not in stack")
-
-            if depth < -16:
-                # Try to selectively spill items to bring target within SWAP16
-                # range. If this fails, swap() handles it via bulk spill/restore.
-                self._reduce_depth_via_spill(
-                    assembly, stack, spilled, stack_ops, op, depth, dry_run
-                )
-                depth = stack.get_depth(op)
-
-            if depth == final_stack_depth:
-                continue
-
-            to_swap = stack.peek(final_stack_depth)
-            if self.dfg.are_equivalent(op, to_swap):
-                # perform a "virtual" swap
-                stack.poke(final_stack_depth, op)
-                stack.poke(depth, to_swap)
-                continue
-
-            cost += self.spiller.swap(assembly, stack, depth, dry_run)
-            cost += self.spiller.swap(assembly, stack, final_stack_depth, dry_run)
-
-        assert stack._stack[-len(stack_ops) :] == stack_ops, (stack, stack_ops)
+                
+                if depth == final_stack_depth:
+                    continue
+                
+                to_swap = stack.peek(final_stack_depth)
+                if self.dfg.are_equivalent(op, to_swap):
+                    # perform a "virtual" swap
+                    stack.poke(final_stack_depth, op)
+                    stack.poke(depth, to_swap)
+                    continue
+                
+                cost += self.spiller.swap(assembly, stack, depth, dry_run)
+                cost += self.spiller.swap(assembly, stack, final_stack_depth, dry_run)
+        
+        assert stack._stack[-len(stack_ops):] == stack_ops, (stack, stack_ops)
 
         if dry_run:
             self.spiller.restore(snap)
@@ -415,6 +411,14 @@ class VenomCompiler:
 
     def popmany(self, asm, to_pop: Iterable[IRVariable], stack):
         to_pop = list(to_pop)
+        if len(to_pop) == 0:
+            return
+
+        # Filter out variables that are not on the stack (NOT_IN_STACK sentinel)
+        # This can happen at CFG merge points where a variable is only defined
+        # in some paths but clean_stack_from_cfg_in tries to pop it
+        from vyper.venom.stack_model import StackModel
+        to_pop = [var for var in to_pop if stack.get_depth(var) is not StackModel.NOT_IN_STACK]
         if len(to_pop) == 0:
             return
 
