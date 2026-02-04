@@ -259,7 +259,8 @@ class VenomTransformer(Transformer):
             # invoke <target> <stack arguments>
             operands = [operands[0]] + list(reversed(operands[1:]))
         # special cases: operands with labels look better un-reversed
-        elif opcode not in ("jmp", "jnz", "djmp", "phi"):
+        # ret: PC must be last operand in internal representation (convention)
+        elif opcode not in ("jmp", "jnz", "djmp", "phi", "ret"):
             operands.reverse()
         return IRInstruction(opcode, operands)
 

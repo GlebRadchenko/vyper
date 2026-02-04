@@ -97,6 +97,7 @@ _reads = {
     "sha3": MEMORY,
     "msize": MSIZE,
     "return": MEMORY,
+    "ret": MEMORY,  # ret depends on memory writes to prevent DCE of mstore
 }
 
 reads = _reads.copy()
