@@ -1,4 +1,6 @@
 from vyper.utils import SizeLimits, int_bounds, int_log2, is_power_of_two, wrap256
+from vyper.evm.address_space import MEMORY
+from vyper.venom.analysis import BasePtrAnalysis, MemoryAliasAnalysis
 from vyper.venom.analysis.dfg import DFGAnalysis
 from vyper.venom.analysis.liveness import LivenessAnalysis
 from vyper.venom.analysis.variable_range import VariableRangeAnalysis
@@ -37,10 +39,14 @@ class AlgebraicOptimizationPass(IRPass):
     dfg: DFGAnalysis
     updater: InstUpdater
     range_analysis: VariableRangeAnalysis
+    base_ptr: BasePtrAnalysis
+    mem_alias: MemoryAliasAnalysis
 
     def run_pass(self):
         self.dfg = self.analyses_cache.request_analysis(DFGAnalysis)
         self.range_analysis = self.analyses_cache.force_analysis(VariableRangeAnalysis)
+        self.base_ptr = self.analyses_cache.request_analysis(BasePtrAnalysis)
+        self.mem_alias = self.analyses_cache.request_analysis(MemoryAliasAnalysis)
         self.updater = InstUpdater(self.dfg)
         self._handle_offset()
 
@@ -333,6 +339,11 @@ class AlgebraicOptimizationPass(IRPass):
 
         bb = mload_inst.parent
         ptr = mload_inst.operands[0]
+        read_loc = self.base_ptr.get_read_location(mload_inst, MEMORY)
+        if not read_loc.is_fixed:
+            return False
+        if read_loc.size != 32:
+            return False
         try:
             inst_idx = bb.instructions.index(mload_inst)
         except ValueError:  # pragma: nocover
@@ -342,12 +353,15 @@ class AlgebraicOptimizationPass(IRPass):
             if (prior.get_write_effects() & Effects.MEMORY) == Effects(0):
                 continue
 
+            write_loc = self.base_ptr.get_write_location(prior, MEMORY)
             if prior.opcode == "mstore" and len(prior.operands) >= 2 and prior.operands[1] == ptr:
-                stored_val = prior.operands[0]
-                return self._is_address_clean(stored_val, prior, seen.copy())
+                if write_loc.completely_contains(read_loc):
+                    stored_val = prior.operands[0]
+                    return self._is_address_clean(stored_val, prior, seen.copy())
 
-            # Any other memory write may alias/clobber, so we stop proving.
-            return False
+            # Intervening writes only block proof when they may alias the read slot.
+            if self.mem_alias.may_alias(read_loc, write_loc):
+                return False
 
         return False
 

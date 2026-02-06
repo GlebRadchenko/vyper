@@ -461,7 +461,7 @@ def test_address_mask_elim_after_clean_mstore_mload_roundtrip():
     _check_pre_post(pre, post)
 
 
-def test_address_mask_elim_not_applied_if_memory_may_be_clobbered():
+def test_address_mask_elim_with_intervening_non_alias_write():
     pre = """
     main:
         %x = source
@@ -474,8 +474,7 @@ def test_address_mask_elim_not_applied_if_memory_may_be_clobbered():
         sink %z
     """
 
-    # Keep the trailing mask: another memory write appears between store/load,
-    # so this conservative proof must not fire.
+    # Non-aliasing writes should not block the proof.
     post = """
     main:
         %x = source
@@ -483,6 +482,34 @@ def test_address_mask_elim_not_applied_if_memory_may_be_clobbered():
         %clean = and %mask, %x
         mstore 64, %clean
         mstore 96, 1
+        %y = mload 64
+        sink %y
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_address_mask_elim_not_applied_if_slot_is_clobbered():
+    pre = """
+    main:
+        %x = source
+        %mask = 0xffffffffffffffffffffffffffffffffffffffff
+        %clean = and %mask, %x
+        mstore 64, %clean
+        mstore 64, 1
+        %y = mload 64
+        %z = and %mask, %y
+        sink %z
+    """
+
+    # Same-slot clobber blocks the optimization.
+    post = """
+    main:
+        %x = source
+        %mask = 0xffffffffffffffffffffffffffffffffffffffff
+        %clean = and %mask, %x
+        mstore 64, %clean
+        mstore 64, 1
         %y = mload 64
         %z = and %mask, %y
         sink %z
