@@ -38,7 +38,9 @@ class DFTPass(IRPass):
             self.stack_order.analyze_bb(bb)
             order = self.stack_order.get_stack(bb)
             if bb in last_order and last_order[bb] == order:
-                break
+                # This block reached a fixed point; keep processing the rest
+                # of the worklist instead of terminating the pass early.
+                continue
             last_order[bb] = order
             self.order = list(reversed(order))
             self._process_basic_block(bb)

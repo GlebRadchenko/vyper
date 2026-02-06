@@ -13,12 +13,15 @@ from vyper.venom.passes import (
     AssertCombinerPass,
     AssignElimination,
     BranchOptimizationPass,
+    BranchThreadingPass,
+    CalldataReadElisionPass,
     CFGNormalization,
     ConcretizeMemLocPass,
     DeadStoreElimination,
     DFTPass,
     FixMemLocationsPass,
     FloatAllocas,
+    LiteralAliasPass,
     LoadElimination,
     LowerDloadPass,
     MakeSSA,
@@ -60,6 +63,7 @@ PASSES_Os: List[PassConfig] = [
     # run memmerge before LowerDload
     MemMergePass,
     LowerDloadPass,
+    CalldataReadElisionPass,
     RemoveUnusedVariablesPass,
     (DeadStoreElimination, {"addr_space": MEMORY}),
     (DeadStoreElimination, {"addr_space": STORAGE}),
@@ -82,7 +86,13 @@ PASSES_Os: List[PassConfig] = [
     AssignElimination,
     RemoveUnusedVariablesPass,
     SingleUseExpansion,
+    LiteralAliasPass,
     ReduceLiteralsCodesize,
     DFTPass,
+    BranchThreadingPass,
+    SimplifyCFGPass,
     CFGNormalization,
+    # Late cleanup: DFT/CFGNormalization can reintroduce repeated literals.
+    # Re-alias after structural normalization to recover PUSHn reductions.
+    LiteralAliasPass,
 ]

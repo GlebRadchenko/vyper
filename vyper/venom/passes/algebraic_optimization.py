@@ -11,9 +11,12 @@ from vyper.venom.basicblock import (
     IRVariable,
     flip_comparison_opcode,
 )
+from vyper.venom.effects import Effects
 from vyper.venom.passes.base_pass import InstUpdater, IRPass
 
 TRUTHY_INSTRUCTIONS = ("iszero", "jnz", "assert", "assert_unreachable")
+ADDRESS_MASK_160 = (1 << 160) - 1
+ADDRESS_SPACE_160 = 1 << 160
 
 
 def lit_eq(op: IROperand, val: int) -> bool:
@@ -108,6 +111,245 @@ class AlgebraicOptimizationPass(IRPass):
 
     def _is_lit(self, operand: IROperand) -> bool:
         return isinstance(operand, IRLiteral)
+
+    def _is_address_mask_literal(self, operand: IROperand) -> bool:
+        return isinstance(operand, IRLiteral) and wrap256(operand.value) == ADDRESS_MASK_160
+
+    def _try_const_uint(self, operand: IROperand, seen: set) -> int | None:
+        """
+        Try to fold an operand to an exact uint256 constant.
+
+        This is intentionally conservative and only supports operations needed
+        for robust address-mask recognition.
+        """
+        if isinstance(operand, IRLiteral):
+            return wrap256(operand.value)
+
+        if not isinstance(operand, IRVariable):
+            return None
+        if operand in seen:
+            return None
+        seen.add(operand)
+
+        producer = self.dfg.get_producing_instruction(operand)
+        if producer is None:
+            return None
+
+        if producer.opcode == "assign":
+            return self._try_const_uint(producer.operands[-1], seen)
+
+        if producer.opcode == "phi":
+            values = []
+            for _label, phi_operand in producer.phi_operands:
+                folded = self._try_const_uint(phi_operand, seen.copy())
+                if folded is None:
+                    return None
+                values.append(folded)
+            if not values:
+                return None
+            first = values[0]
+            return first if all(v == first for v in values[1:]) else None
+
+        if len(producer.operands) == 1:
+            a = self._try_const_uint(producer.operands[0], seen.copy())
+            if a is None:
+                return None
+            if producer.opcode == "not":
+                return wrap256(~a)
+            return None
+
+        if len(producer.operands) == 2:
+            a = self._try_const_uint(producer.operands[0], seen.copy())
+            b = self._try_const_uint(producer.operands[1], seen.copy())
+            if a is None or b is None:
+                return None
+
+            # Internal operand convention for non-commutative ops:
+            # lhs is operands[1], rhs is operands[0].
+            if producer.opcode == "add":
+                return wrap256(a + b)
+            if producer.opcode == "mul":
+                return wrap256(a * b)
+            if producer.opcode == "and":
+                return wrap256(a & b)
+            if producer.opcode == "or":
+                return wrap256(a | b)
+            if producer.opcode == "xor":
+                return wrap256(a ^ b)
+            if producer.opcode == "sub":
+                return wrap256(b - a)
+            if producer.opcode == "div":
+                return 0 if a == 0 else wrap256(b // a)
+            if producer.opcode == "mod":
+                return 0 if a == 0 else wrap256(b % a)
+            if producer.opcode == "shl":
+                return wrap256(a << b)
+            if producer.opcode == "shr":
+                if b >= 256:
+                    return 0
+                return wrap256(a >> b)
+
+        return None
+
+    def _is_address_mask_operand(self, operand: IROperand, seen: set) -> bool:
+        """
+        Return True if `operand` is provably equal to the canonical 160-bit mask.
+        """
+        if self._is_address_mask_literal(operand):
+            return True
+
+        folded = self._try_const_uint(operand, seen.copy())
+        if folded is not None and folded == ADDRESS_MASK_160:
+            return True
+
+        if not isinstance(operand, IRVariable):
+            return False
+        if operand in seen:
+            return False
+        seen.add(operand)
+
+        producer = self.dfg.get_producing_instruction(operand)
+        if producer is None:
+            return False
+
+        # Exact-value proof from range analysis (if available).
+        op_range = self.range_analysis.get_range(operand, producer)
+        if (
+            not op_range.is_top
+            and not op_range.is_empty
+            and op_range.lo == ADDRESS_MASK_160
+            and op_range.hi == ADDRESS_MASK_160
+        ):
+            return True
+
+        if producer.opcode == "assign":
+            return self._is_address_mask_operand(producer.operands[-1], seen)
+
+        if producer.opcode == "phi":
+            has_inputs = False
+            for _label, phi_operand in producer.phi_operands:
+                has_inputs = True
+                if not self._is_address_mask_operand(phi_operand, seen.copy()):
+                    return False
+            return has_inputs
+
+        return False
+
+    def _is_address_clean(self, operand: IROperand, at_inst: IRInstruction, seen: set) -> bool:
+        """
+        Return True if `operand` is provably in [0, 2**160 - 1] at `at_inst`.
+
+        This combines range facts with a small provenance walk through DFG so we
+        can eliminate redundant `and(mask160, x)` patterns that survive earlier
+        simplifications.
+        """
+        if isinstance(operand, IRLiteral):
+            return wrap256(operand.value) <= ADDRESS_MASK_160
+        if not isinstance(operand, IRVariable):
+            return False
+        if operand in seen:
+            return False
+
+        seen.add(operand)
+
+        # Flow-sensitive range proof first (most precise).
+        op_range = self.range_analysis.get_range(operand, at_inst)
+        if not op_range.is_top and not op_range.is_empty and op_range.lo >= 0 and op_range.hi <= ADDRESS_MASK_160:
+            return True
+
+        producer = self.dfg.get_producing_instruction(operand)
+        if producer is None:
+            return False
+
+        if producer.opcode == "assign":
+            return self._is_address_clean(producer.operands[-1], producer, seen)
+
+        if producer.opcode == "and":
+            # Explicit mask160 guarantees address-clean result.
+            if any(self._is_address_mask_operand(op, set()) for op in producer.operands):
+                return True
+            # Any AND with a <=160-bit literal keeps result <=160-bit.
+            for op in producer.operands:
+                folded = self._try_const_uint(op, set())
+                if folded is not None and folded <= ADDRESS_MASK_160:
+                    return True
+            # If either operand is already address-clean, result is also address-clean.
+            # Bitwise AND cannot introduce bits outside the clean operand.
+            return any(self._is_address_clean(op, producer, seen.copy()) for op in producer.operands)
+
+        if producer.opcode == "shr":
+            # Logical right shift by >=96 keeps at most 160 low bits.
+            shift = producer.operands[-1]
+            if isinstance(shift, IRLiteral) and wrap256(shift.value) >= 96:
+                return True
+            # If input is already address-clean, any logical right shift preserves that.
+            if len(producer.operands) >= 2:
+                return self._is_address_clean(producer.operands[-2], producer, seen.copy())
+            return False
+
+        if producer.opcode == "mload" and self._mload_from_clean_store(producer, seen.copy()):
+            return True
+
+        # bool-producing ops are always 0/1 (thus 160-bit clean).
+        if producer.opcode in ("iszero", "eq", "lt", "gt", "slt", "sgt"):
+            return True
+
+        # byte(...) is always in [0, 255].
+        if producer.opcode == "byte":
+            return True
+
+        if producer.opcode == "mod":
+            # mod(divisor, x): result is in [0, divisor-1] if divisor != 0.
+            divisor = self._try_const_uint(producer.operands[0], set())
+            if divisor is not None and divisor <= ADDRESS_SPACE_160:
+                return True
+
+        if producer.opcode in ("addmod", "mulmod"):
+            # addmod/modulus and mulmod/modulus are bounded by modulus.
+            modulus = self._try_const_uint(producer.operands[0], set())
+            if modulus is not None and modulus <= ADDRESS_SPACE_160:
+                return True
+
+        # Address-like opcodes already return 160-bit values.
+        if producer.opcode in ("address", "caller", "origin", "coinbase", "create", "create2"):
+            return True
+
+        # Conservative phi handling: only clean if all incoming values are clean.
+        if producer.opcode == "phi":
+            for _label, phi_operand in producer.phi_operands:
+                if not self._is_address_clean(phi_operand, producer, seen.copy()):
+                    return False
+            return True
+
+        return False
+
+    def _mload_from_clean_store(self, mload_inst: IRInstruction, seen: set) -> bool:
+        """
+        Prove that an mload result is address-clean by finding a dominating
+        same-block store to the exact same pointer with no intervening memory writes.
+        """
+        if mload_inst.opcode != "mload" or len(mload_inst.operands) != 1:
+            return False
+
+        bb = mload_inst.parent
+        ptr = mload_inst.operands[0]
+        try:
+            inst_idx = bb.instructions.index(mload_inst)
+        except ValueError:  # pragma: nocover
+            return False
+
+        for prior in reversed(bb.instructions[:inst_idx]):
+            if (prior.get_write_effects() & Effects.MEMORY) == Effects(0):
+                continue
+
+            if prior.opcode == "mstore" and len(prior.operands) >= 2 and prior.operands[1] == ptr:
+                stored_val = prior.operands[0]
+                return self._is_address_clean(stored_val, prior, seen.copy())
+
+            # Any other memory write may alias/clobber, so we stop proving.
+            return False
+
+        return False
 
     def _algebraic_opt(self):
         self._algebraic_opt_pass()
@@ -256,6 +498,21 @@ class AlgebraicOptimizationPass(IRPass):
         if inst.opcode == "and" and lit_eq(operands[0], -1):
             self.updater.mk_assign(inst, operands[1])
             return
+
+        # address-mask redundancy:
+        # and(0xffffffffffffffffffffffffffffffffffffffff, x) -> x
+        # when x is provably already 160-bit clean.
+        if inst.opcode == "and":
+            if self._is_address_mask_operand(operands[0], set()) and self._is_address_clean(
+                operands[1], inst, set()
+            ):
+                self.updater.mk_assign(inst, operands[1])
+                return
+            if self._is_address_mask_operand(operands[1], set()) and self._is_address_clean(
+                operands[0], inst, set()
+            ):
+                self.updater.mk_assign(inst, operands[0])
+                return
 
         if inst.opcode in ("mul", "and", "div", "sdiv", "mod", "smod"):
             # (x * 0) == (x & 0) == (x // 0) == (x % 0) -> 0
