@@ -1,3 +1,4 @@
+import os
 from typing import TYPE_CHECKING
 
 from vyper.evm.address_space import MEMORY, STORAGE, TRANSIENT, AddrSpace
@@ -5,11 +6,19 @@ from vyper.utils import OrderedSet
 from vyper.venom.analysis import BasePtrAnalysis, CFGAnalysis, DFGAnalysis
 from vyper.venom.analysis.mem_ssa import MemoryDef, mem_ssa_type_factory
 from vyper.venom.basicblock import IRBasicBlock, IRInstruction
+import vyper.venom.effects as effects
 from vyper.venom.effects import NON_MEMORY_EFFECTS, NON_STORAGE_EFFECTS, NON_TRANSIENT_EFFECTS
 from vyper.venom.passes.base_pass import InstUpdater, IRPass
 
 if TYPE_CHECKING:
     from vyper.venom.memory_location import MemoryLocation
+
+try:
+    from yul2venom.utils.env import env_str
+except ImportError:
+    # Fallback when yul2venom package path is not available
+    def env_str(name: str, default: str | None = None):
+        return os.getenv(name, default)
 
 
 class DeadStoreElimination(IRPass):
@@ -18,8 +27,19 @@ class DeadStoreElimination(IRPass):
     """
 
     def run_pass(self, /, addr_space: AddrSpace):
+        self.addr_space = addr_space
         mem_ssa_type = mem_ssa_type_factory(addr_space)
+
         if addr_space == MEMORY:
+            # Memory DSE modes:
+            #   off   - fully disabled
+            #   auto  - enabled only for functions with fixed-address writes
+            #   force - always enabled
+            mode = (env_str("Y2V_MEMORY_DSE_MODE", "auto") or "auto").strip().lower()
+            if mode in ("0", "off", "false", "no"):
+                return
+            if mode not in ("1", "force", "true", "yes") and not self._memory_dse_is_safe():
+                return
             self.NON_RELATED_EFFECTS = NON_MEMORY_EFFECTS
         elif addr_space == STORAGE:
             self.NON_RELATED_EFFECTS = NON_STORAGE_EFFECTS
@@ -49,6 +69,87 @@ class DeadStoreElimination(IRPass):
             self.analyses_cache.invalidate_analysis(DFGAnalysis)
             self.analyses_cache.invalidate_analysis(mem_ssa_type)
         self.analyses_cache.invalidate_analysis(BasePtrAnalysis)
+
+    def _memory_dse_is_safe(self) -> bool:
+        """
+        Conservative gate for MEMORY DSE.
+
+        We only enable MEMORY DSE when every memory write in the function has a
+        fixed location/size in BasePtr analysis. This avoids deleting stores in
+        functions that use opaque or dynamic memory effects.
+        """
+        base_ptr = self.analyses_cache.request_analysis(BasePtrAnalysis)
+
+        for bb in self.function.get_basic_blocks():
+            for inst in bb.instructions:
+                if (inst.get_write_effects() & effects.MEMORY) == effects.EMPTY:
+                    continue
+
+                loc = base_ptr.get_write_location(inst, MEMORY)
+                if loc.is_empty():
+                    continue
+                if not loc.is_fixed:
+                    return False
+
+        return True
+
+    def _addr_space_effect(self):
+        if self.addr_space == MEMORY:
+            return effects.MEMORY
+        if self.addr_space == STORAGE:
+            return effects.STORAGE
+        if self.addr_space == TRANSIENT:
+            return effects.TRANSIENT
+        return None
+
+    def _has_implicit_memory_read(self, inst: IRInstruction) -> bool:
+        """
+        Conservative fallback for MEMORY DSE when MemSSA cannot extract an
+        explicit read location.
+
+        Call-like and copy/return opcodes may read memory ranges via offsets
+        encoded in operands (input buffers, return buffers, log payloads, etc).
+        """
+        if self.addr_space != MEMORY:
+            return False
+        return inst.opcode in {
+            "call",
+            "staticcall",
+            "delegatecall",
+            "create",
+            "create2",
+            "returndatacopy",
+            "mcopy",
+            "return",
+            "revert",
+            "sha3",
+            "log",
+            "log0",
+            "log1",
+            "log2",
+            "log3",
+            "log4",
+        }
+
+    def _has_implicit_memory_write(self, inst: IRInstruction) -> bool:
+        """
+        Conservative fallback for MEMORY DSE when MemSSA cannot extract an
+        explicit write location.
+        """
+        if self.addr_space != MEMORY:
+            return False
+        return inst.opcode in {
+            "call",
+            "staticcall",
+            "delegatecall",
+            "create",
+            "create2",
+            "returndatacopy",
+            "mcopy",
+            "codecopy",
+            "calldatacopy",
+            "extcodecopy",
+        }
 
     def _has_uses(self, inst: IRInstruction):
         """
@@ -89,6 +190,14 @@ class DeadStoreElimination(IRPass):
                     read_loc = mem_use.loc
                     if self.mem_ssa.memalias.may_alias(read_loc, query_loc):
                         return True
+                else:
+                    # Be conservative if MemSSA could not extract a location
+                    # for an instruction that is known to read this address space.
+                    eff = self._addr_space_effect()
+                    if eff is not None and (inst.get_read_effects() & eff) != effects.EMPTY:
+                        return True
+                    if self._has_implicit_memory_read(inst):
+                        return True
 
                 # Check if the instruction writes to the memory location
                 # and it clobbers the memory definition. In this case,
@@ -97,6 +206,15 @@ class DeadStoreElimination(IRPass):
                 if mem_def is not None:
                     write_loc = mem_def.loc
                     if write_loc.completely_contains(query_loc):
+                        clobbered = True
+                        break
+                else:
+                    # Unknown writes in this address space conservatively clobber.
+                    eff = self._addr_space_effect()
+                    if eff is not None and (inst.get_write_effects() & eff) != effects.EMPTY:
+                        clobbered = True
+                        break
+                    if self._has_implicit_memory_write(inst):
                         clobbered = True
                         break
 
