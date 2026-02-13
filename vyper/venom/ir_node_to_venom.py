@@ -160,7 +160,9 @@ def ir_node_to_venom(ir: IRnode, deploy_info: Optional[DeployInfo] = None) -> IR
         )
         bb.insert_instruction(inst)
         _immutables_region_alloca = inst
-        ctx.mem_allocator.set_position(Allocation(_immutables_region_alloca), 0)
+        allocation = Allocation(_immutables_region_alloca)
+        ctx.mem_allocator.set_position(allocation, 0)
+        ctx.mem_allocator.add_global(allocation)
         symbols["runtime_codesize"] = IRLiteral(deploy_info.runtime_codesize)
 
     _convert_ir_bb(fn, ir, symbols)
@@ -811,6 +813,9 @@ def _convert_ir_bb(fn, ir, symbols):
                 if _pass_via_stack(_current_func_t)[alloca.name]:
                     param = fn.get_param_by_id(alloca._id)
                     assert param is not None
+                    # NOTE: The mstore MUST immediately follow the palloca.
+                    # FloatAllocas pass depends on this invariant to move both
+                    # instructions together to the entry block.
                     bb.append_instruction("mstore", param.func_var, ptr)
                 _alloca_table[alloca._id] = ptr
             return _alloca_table[alloca._id]
