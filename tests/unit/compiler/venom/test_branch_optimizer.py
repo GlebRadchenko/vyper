@@ -51,3 +51,22 @@ def test_simple_jump_case():
         sink %res2
     """
     _check_pre_post(pre, post)
+
+
+def test_keep_xor_condition_without_inserting_iszero():
+    pre = """
+    main:
+        %a = source
+        %b = source
+        %c = source
+        %cond = xor %a, %b
+        jnz %cond, @heavy, @light
+    heavy:
+        %h1 = add %a, %b
+        %h2 = add %h1, %c
+        sink %h2
+    light:
+        sink %a
+    """
+
+    _check_pre_post(pre, pre)

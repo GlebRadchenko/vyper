@@ -82,6 +82,44 @@ def test_sccp_algebraic_opt_sub_xor_max():
     _check_pre_post(pre, post, hevm=False)
 
 
+def test_sccp_algebraic_opt_add_minus_one():
+    pre = """
+    _global:
+        %par = source
+        %1 = add %par, -1
+        %2 = add -1, %par
+        sink %1, %2
+    """
+    post = """
+    _global:
+        %par = source
+        %1 = sub %par, 1
+        %2 = sub %par, 1
+        sink %1, %2
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_sccp_algebraic_opt_mul_minus_one():
+    pre = """
+    _global:
+        %par = source
+        %1 = mul %par, -1
+        %2 = mul -1, %par
+        sink %1, %2
+    """
+    post = """
+    _global:
+        %par = source
+        %1 = sub 0, %par
+        %2 = sub 0, %par
+        sink %1, %2
+    """
+
+    _check_pre_post(pre, post)
+
+
 def test_sccp_algebraic_opt_shift():
     # x << 0 == x >> 0 == x (sar) 0 -> x
     # sar is right arithmetic shift

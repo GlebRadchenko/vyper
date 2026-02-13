@@ -495,6 +495,11 @@ class AlgebraicOptimizationPass(IRPass):
                 self.updater.mk_assign(inst, operands[1])
                 return
 
+            # x + (-1) -> x - 1 (smaller immediate)
+            if inst.opcode == "add" and lit_eq(operands[0], -1):
+                self.updater.update(inst, "sub", [IRLiteral(1), operands[1]])
+                return
+
             # (-1) - x -> ~x
             # from two's complement
             if inst.opcode == "sub" and lit_eq(operands[1], -1):
@@ -535,6 +540,11 @@ class AlgebraicOptimizationPass(IRPass):
                 return
 
         if inst.opcode in {"mul", "div", "sdiv", "mod", "smod"}:
+            # (-1) * x -> 0 - x (smaller immediate)
+            if inst.opcode == "mul" and lit_eq(operands[0], -1):
+                self.updater.update(inst, "sub", [operands[1], IRLiteral(0)])
+                return
+
             if inst.opcode in ("mod", "smod") and lit_eq(operands[0], 1):
                 # x % 1 -> 0
                 self.updater.mk_assign(inst, IRLiteral(0))

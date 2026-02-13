@@ -49,7 +49,9 @@ class BranchOptimizationPass(IRPass):
                 self.updater.update(term_inst, term_inst.opcode, new_operands)
 
             # heuristic: add an iszero and swap branches
-            elif cost_a > cost_b or (cost_a >= cost_b and prefer_iszero(prev_inst)):
+            elif prev_inst.opcode != "xor" and (
+                cost_a > cost_b or (cost_a >= cost_b and prefer_iszero(prev_inst))
+            ):
                 tmp = self.updater.add_before(term_inst, "iszero", [term_inst.operands[0]])
                 assert tmp is not None  # help mypy
                 new_cond = tmp

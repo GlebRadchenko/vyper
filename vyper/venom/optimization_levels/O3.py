@@ -91,11 +91,10 @@ PASSES_O3: List[PassConfig] = [
     RemoveUnusedVariablesPass,
     TailMergePass,
     SimplifyCFGPass,
-    SingleUseExpansion,
-    LiteralAliasPass,
-    DFTPass,
     BranchThreadingPass,
-    SimplifyCFGPass,
+    LiteralAliasPass,
+    SingleUseExpansion,
+    DFTPass,
     CFGNormalization,
     # Late cleanup: DFT/CFGNormalization can reintroduce repeated literals.
     # Re-alias after structural normalization to recover PUSHn reductions.

@@ -217,3 +217,37 @@ def test_no_merge_with_phi_nodes():
     """
 
     _check_no_change(pre)
+
+
+def test_no_merge_with_multiple_predecessors():
+    pre = """
+    main:
+        %cond = source
+        jnz %cond, @left, @right
+    left:
+        jnz %cond, @a, @b
+    right:
+        jnz %cond, @a, @b
+    a:
+        revert 0, 0
+    b:
+        revert 0, 0
+    """
+
+    _check_no_change(pre, hevm=False)
+
+
+def test_no_merge_when_tail_uses_param():
+    pre = """
+    main:
+        %cond = source
+        jnz %cond, @a, @b
+    a:
+        %pa = param
+        return %pa, 0
+    b:
+        %pb = param
+        return %pb, 0
+    """
+
+    _check_no_change(pre, hevm=False)

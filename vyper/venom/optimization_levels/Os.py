@@ -85,12 +85,12 @@ PASSES_Os: List[PassConfig] = [
     CSE,
     AssignElimination,
     RemoveUnusedVariablesPass,
-    SingleUseExpansion,
-    LiteralAliasPass,
-    ReduceLiteralsCodesize,
-    DFTPass,
     BranchThreadingPass,
     SimplifyCFGPass,
+    LiteralAliasPass,
+    ReduceLiteralsCodesize,
+    SingleUseExpansion,
+    DFTPass,
     CFGNormalization,
     # Late cleanup: DFT/CFGNormalization can reintroduce repeated literals.
     # Re-alias after structural normalization to recover PUSHn reductions.

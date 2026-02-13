@@ -176,6 +176,15 @@ def test_o2_dft_is_sandwiched_by_single_use_and_cfg_normalization():
     assert pass_classes[idx + 1] is CFGNormalization
 
 
+@pytest.mark.parametrize("level", [OptimizationLevel.O2, OptimizationLevel.O3, OptimizationLevel.Os])
+def test_dft_is_immediately_followed_by_cfg_normalization(level):
+    pipeline = venom._build_fn_pass_pipeline(VenomOptimizationFlags(level=level))
+    pass_classes = [pass_cls for pass_cls, _ in pipeline]
+    idx = pass_classes.index(DFTPass)
+
+    assert pass_classes[idx + 1] is CFGNormalization
+
+
 def test_error_message_stops_at_instead():
     class A(IRPass):
         pass

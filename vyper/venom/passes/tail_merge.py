@@ -58,10 +58,15 @@ class TailMergePass(IRPass):
         if not bb.is_halting:
             return None
 
-        # reject blocks with phis or non-local variable inputs
+        # Keep tail-merge conservative: only merge simple single-entry tails.
+        # This avoids implicit stack-parameter corner cases in non-entry blocks.
+        if len(self.cfg.cfg_in(bb)) != 1:
+            return None
+
+        # reject pseudo instructions or non-local variable inputs
         defined: set[IRVariable] = set()
         for inst in bb.instructions:
-            if inst.opcode == "phi":
+            if inst.is_pseudo:
                 return None
             for op in inst.get_input_variables():
                 if op not in defined:
