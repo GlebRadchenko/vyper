@@ -106,6 +106,17 @@ _ONE_TO_ONE_INSTRUCTIONS = frozenset(
         "prevrandao",
         "difficulty",
         "invalid",
+        # Opcodes used in Yul but not in native Vyper
+        "sha3",
+        "return",
+        "log0",
+        "log1",
+        "log2",
+        "log3",
+        "log4",
+        "mstore8",
+        "pop",
+        "byte",
     ]
 )
 
@@ -218,47 +229,72 @@ class VenomCompiler:
         if len(stack_ops) == 0:
             return 0
 
+        # NOTE: Duplicate literal handling has been migrated to the transpiler.
+        # The transpiler (ir/basicblock.py append_instruction) now materializes
+        # duplicate literals as unique IRVariables before emitting instructions.
+        # This eliminates the need for backend deduplication logic.
+
         assert len(stack_ops) == len(
             set(stack_ops)
         ), f"duplicated stack {stack_ops}"  # precondition
 
         cost = 0
-        for i, op in enumerate(stack_ops):
-            final_stack_depth = -(len(stack_ops) - i - 1)
-
-            depth = stack.get_depth(op)
-
-            if depth == StackModel.NOT_IN_STACK:
-                if isinstance(op, IRVariable) and op in spilled:
-                    self.spiller.restore_spilled_operand(
-                        assembly, stack, spilled, op, dry_run=dry_run
+        
+        # Iterative reorder: continue until all operands are in correct positions.
+        # Spilling/swapping one operand can displace others already positioned,
+        # so we must re-verify and re-position until stable.
+        max_iterations = len(stack_ops) * 3  # Safety limit
+        iteration = 0
+        
+        while iteration < max_iterations:
+            # Check if all operands are already in correct positions
+            all_correct = True
+            for i, op in enumerate(stack_ops):
+                expected_depth = -(len(stack_ops) - i - 1)
+                actual_depth = stack.get_depth(op)
+                if actual_depth != expected_depth:
+                    all_correct = False
+                    break
+            
+            if all_correct:
+                break
+            
+            iteration += 1
+            
+            for i, op in enumerate(stack_ops):
+                final_stack_depth = -(len(stack_ops) - i - 1)
+                depth = stack.get_depth(op)
+                
+                if depth == StackModel.NOT_IN_STACK:
+                    if isinstance(op, IRVariable) and op in spilled:
+                        self.spiller.restore_spilled_operand(
+                            assembly, stack, spilled, op, dry_run=dry_run
+                        )
+                        depth = stack.get_depth(op)
+                    else:  # pragma: nocover
+                        raise CompilerPanic(f"Variable {op} not in stack")
+                
+                if depth < -16:
+                    # Spill to bring target within SWAP16 range
+                    self._reduce_depth_via_spill(
+                        assembly, stack, spilled, stack_ops, op, depth, dry_run
                     )
                     depth = stack.get_depth(op)
-                else:  # pragma: nocover
-                    raise CompilerPanic(f"Variable {op} not in stack")
-
-            if depth < -16:
-                # Try to selectively spill items to bring target within SWAP16
-                # range. If this fails, swap() handles it via bulk spill/restore.
-                self._reduce_depth_via_spill(
-                    assembly, stack, spilled, stack_ops, op, depth, dry_run
-                )
-                depth = stack.get_depth(op)
-
-            if depth == final_stack_depth:
-                continue
-
-            to_swap = stack.peek(final_stack_depth)
-            if self.dfg.are_equivalent(op, to_swap):
-                # perform a "virtual" swap
-                stack.poke(final_stack_depth, op)
-                stack.poke(depth, to_swap)
-                continue
-
-            cost += self.spiller.swap(assembly, stack, depth, dry_run)
-            cost += self.spiller.swap(assembly, stack, final_stack_depth, dry_run)
-
-        assert stack._stack[-len(stack_ops) :] == stack_ops, (stack, stack_ops)
+                
+                if depth == final_stack_depth:
+                    continue
+                
+                to_swap = stack.peek(final_stack_depth)
+                if self.dfg.are_equivalent(op, to_swap):
+                    # perform a "virtual" swap
+                    stack.poke(final_stack_depth, op)
+                    stack.poke(depth, to_swap)
+                    continue
+                
+                cost += self.spiller.swap(assembly, stack, depth, dry_run)
+                cost += self.spiller.swap(assembly, stack, final_stack_depth, dry_run)
+        
+        assert stack._stack[-len(stack_ops):] == stack_ops, (stack, stack_ops)
 
         if dry_run:
             self.spiller.restore(snap)
@@ -378,6 +414,14 @@ class VenomCompiler:
         if len(to_pop) == 0:
             return
 
+        # Filter out variables that are not on the stack (NOT_IN_STACK sentinel)
+        # This can happen at CFG merge points where a variable is only defined
+        # in some paths but clean_stack_from_cfg_in tries to pop it
+        from vyper.venom.stack_model import StackModel
+        to_pop = [var for var in to_pop if stack.get_depth(var) is not StackModel.NOT_IN_STACK]
+        if len(to_pop) == 0:
+            return
+
         # if the items to pop are contiguous, we can swap the top of
         # stack to just below the lowest item-to-pop and then just issue
         # sequential pops
@@ -424,6 +468,7 @@ class VenomCompiler:
         if len(self.cfg.cfg_in(basicblock)) == 1:
             self.clean_stack_from_cfg_in(asm, basicblock, stack)
 
+
         all_insts = [inst for inst in basicblock.instructions if inst.opcode != "param"]
 
         # Check if this block ends with a halting terminator (return, revert, stop)
@@ -436,11 +481,12 @@ class VenomCompiler:
             else:
                 next_liveness = self.liveness.out_vars(basicblock)
 
-            asm.extend(
-                self._generate_evm_for_instruction(
+            inst_asm = self._generate_evm_for_instruction(
                     inst, stack, next_liveness, spilled, is_halting_block
                 )
-            )
+            
+            asm.extend(inst_asm)
+
 
         if DEBUG_SHOW_COST:
             print(" ".join(map(str, asm)), file=sys.stderr)
@@ -498,9 +544,11 @@ class VenomCompiler:
             assert log_topic_count in [0, 1, 2, 3, 4], "Invalid topic count"
             operands = inst.operands[1:]
         elif opcode == "ret":
-            # For ret with values, we only treat the return PC as an input operand
-            # The return values must remain on the stack and are not consumed here
-            operands = [inst.operands[-1]]
+            # For ret with values, we need to reorder ALL operands to ensure
+            # proper stack layout: [ret_val_0 (deep), ret_val_1, ..., PC (TOS)]
+            # Convention: PC is the last operand in internal representation.
+            # All operands participate in stack reorder so values are in correct order.
+            operands = list(inst.operands)
         else:
             operands = inst.operands
 
@@ -527,6 +575,29 @@ class VenomCompiler:
             assembly.extend(_ofst(_as_asm_symbol(label), ofst.value))
             stack.push(inst.output)
             return apply_line_numbers(inst, assembly)
+
+        # Assign: rename stack slot in-place using poke. Literals fall through to normal path.
+        if opcode == "assign":
+            source = inst.operands[0]
+            dest = inst.output
+            
+            if not isinstance(source, IRVariable):
+                # Literal source: let normal path handle
+                pass
+            else:
+                depth = stack.get_depth(source)
+                if depth is StackModel.NOT_IN_STACK:
+                    # Source dead - push placeholder
+                    assembly.append("PUSH0")
+                    stack.push(dest)
+                else:
+                    # DUP if source still live, then rename
+                    if source in next_liveness:
+                        self.spiller.dup(assembly, stack, depth)
+                        stack.poke(0, dest)
+                    else:
+                        stack.poke(depth, dest)
+                return apply_line_numbers(inst, assembly)
 
         # Step 2: Emit instruction's input operands
         self._emit_input_operands(assembly, inst, operands, stack, next_liveness, spilled)
@@ -582,6 +653,7 @@ class VenomCompiler:
         elif opcode == "param":
             pass
         elif opcode == "assign":
+            # Handled earlier via poke; here only for literal sources.
             pass
         elif opcode == "dbname":
             pass
@@ -673,6 +745,9 @@ class VenomCompiler:
         next_inst = inst.parent.instructions[next_index + 1]
 
         if next_inst.is_bb_terminator:
+            return
+        # Skip for assign - it uses poke, not stack top
+        if next_inst.opcode == "assign":
             return
         # if there are no live vars at the next point, nothing to schedule
         if len(next_liveness) == 0:

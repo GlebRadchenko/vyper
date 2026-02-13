@@ -125,3 +125,34 @@ def test_literal_codesize_no_shl(orig_value):
     """
 
     _check_no_change(pre)
+
+
+def test_literal_codesize_low_ones_mask_to_shr_not():
+    """
+    Large low-bit masks (e.g. address mask) should be rebuilt as:
+      not 0 ; shr (256-n)
+    to reduce literal payload size.
+    """
+    mask160 = (1 << 160) - 1
+    pre = f"""
+    main:
+        %1 = {mask160}
+        sink %1
+    """
+
+    post = """
+    main:
+        %2 = not 0
+        %1 = shr 96, %2
+        sink %1
+    """
+    _check_pre_post(pre, post)
+
+
+def test_literal_codesize_small_low_ones_mask_unchanged():
+    pre = """
+    main:
+        %1 = 65535
+        sink %1
+    """
+    _check_no_change(pre)

@@ -298,3 +298,221 @@ def run() -> uint256:
     """
 
     vyper.compile_code(code, output_formats=["bytecode"])
+
+
+def test_address_mask_elim_with_mask_variable():
+    pre = """
+    main:
+        %mask = 0xffffffffffffffffffffffffffffffffffffffff
+        %a = address
+        %x = and %mask, %a
+        sink %x
+    """
+
+    post = """
+    main:
+        %a = address
+        sink %a
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_address_mask_elim_with_assigned_mask_variable():
+    pre = """
+    main:
+        %mask0 = 0xffffffffffffffffffffffffffffffffffffffff
+        %mask1 = %mask0
+        %a = address
+        %x = and %mask1, %a
+        sink %x
+    """
+
+    post = """
+    main:
+        %a = address
+        sink %a
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_address_mask_elim_nested_mask_chain():
+    pre = """
+    main:
+        %mask = 0xffffffffffffffffffffffffffffffffffffffff
+        %a = address
+        %x = and %mask, %a
+        %y = and %mask, %x
+        sink %y
+    """
+
+    post = """
+    main:
+        %a = address
+        sink %a
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_address_mask_elim_computed_mask_expression():
+    pre = """
+    main:
+        %a = address
+        %shifted = shl 160, 1
+        %mask = sub %shifted, 1
+        %x = and %mask, %a
+        sink %x
+    """
+
+    post = """
+    main:
+        %a = address
+        sink %a
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_address_mask_elim_mod_2pow160():
+    pre = """
+    main:
+        %x = source
+        %y = mod 0x10000000000000000000000000000000000000000, %x
+        %z = and 0xffffffffffffffffffffffffffffffffffffffff, %y
+        sink %z
+    """
+
+    post = """
+    main:
+        %x = source
+        %y = mod 0x10000000000000000000000000000000000000000, %x
+        sink %y
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_address_mask_elim_addmod_bounded_by_modulus():
+    pre = """
+    main:
+        %a = source
+        %b = source
+        %r = addmod %a, %b, 0x10000000000000000000000000000000000000000
+        %z = and 0xffffffffffffffffffffffffffffffffffffffff, %r
+        sink %z
+    """
+
+    post = """
+    main:
+        %a = source
+        %b = source
+        %r = addmod %a, %b, 0x10000000000000000000000000000000000000000
+        sink %r
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_address_mask_elim_mulmod_bounded_by_modulus():
+    pre = """
+    main:
+        %a = source
+        %b = source
+        %r = mulmod %a, %b, 0x10000000000000000000000000000000000000000
+        %z = and 0xffffffffffffffffffffffffffffffffffffffff, %r
+        sink %z
+    """
+
+    post = """
+    main:
+        %a = source
+        %b = source
+        %r = mulmod %a, %b, 0x10000000000000000000000000000000000000000
+        sink %r
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_address_mask_elim_after_clean_mstore_mload_roundtrip():
+    pre = """
+    main:
+        %x = source
+        %mask = 0xffffffffffffffffffffffffffffffffffffffff
+        %clean = and %mask, %x
+        mstore 64, %clean
+        %y = mload 64
+        %z = and %mask, %y
+        sink %z
+    """
+
+    post = """
+    main:
+        %x = source
+        %mask = 0xffffffffffffffffffffffffffffffffffffffff
+        %clean = and %mask, %x
+        mstore 64, %clean
+        %y = mload 64
+        sink %y
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_address_mask_elim_with_intervening_non_alias_write():
+    pre = """
+    main:
+        %x = source
+        %mask = 0xffffffffffffffffffffffffffffffffffffffff
+        %clean = and %mask, %x
+        mstore 64, %clean
+        mstore 96, 1
+        %y = mload 64
+        %z = and %mask, %y
+        sink %z
+    """
+
+    # Non-aliasing writes should not block the proof.
+    post = """
+    main:
+        %x = source
+        %mask = 0xffffffffffffffffffffffffffffffffffffffff
+        %clean = and %mask, %x
+        mstore 64, %clean
+        mstore 96, 1
+        %y = mload 64
+        sink %y
+    """
+
+    _check_pre_post(pre, post)
+
+
+def test_address_mask_elim_not_applied_if_slot_is_clobbered():
+    pre = """
+    main:
+        %x = source
+        %mask = 0xffffffffffffffffffffffffffffffffffffffff
+        %clean = and %mask, %x
+        mstore 64, %clean
+        mstore 64, 1
+        %y = mload 64
+        %z = and %mask, %y
+        sink %z
+    """
+
+    # Same-slot clobber blocks the optimization.
+    post = """
+    main:
+        %x = source
+        %mask = 0xffffffffffffffffffffffffffffffffffffffff
+        %clean = and %mask, %x
+        mstore 64, %clean
+        mstore 64, 1
+        %y = mload 64
+        %z = and %mask, %y
+        sink %z
+    """
+
+    _check_pre_post(pre, post)

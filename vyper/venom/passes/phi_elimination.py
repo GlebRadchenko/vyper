@@ -30,7 +30,50 @@ class PhiEliminationPass(IRPass):
             src = next(iter(srcs))
             if src == inst:
                 return
-            self.updater.mk_assign(inst, src.output)
+
+            # Multi-output producers (e.g. invoke with 2 returns) do not have
+            # a unique `.output`. Resolve the phi replacement from incoming vars
+            # instead of assuming a single-output source instruction.
+            replacement = self._resolve_single_origin_phi_value(inst, src)
+            if replacement is not None:
+                self.updater.mk_assign(inst, replacement)
+
+    def _resolve_single_origin_phi_value(
+        self, phi_inst: IRInstruction, source_inst: IRInstruction
+    ) -> IRVariable | None:
+        """
+        Resolve replacement variable for a single-origin phi.
+
+        For multi-output producers, phi inputs can be distinct SSA variables
+        produced by the same instruction. We only collapse when all incoming
+        phi values normalize to one unique root variable.
+        """
+        candidates: set[IRVariable] = set()
+
+        for _, incoming_var in phi_inst.phi_operands:
+            root_var = incoming_var
+            producer = self.dfg.get_producing_instruction(root_var)
+
+            # Follow assignment chains to recover the original source variable.
+            while producer is not None and producer.opcode == "assign":
+                op = producer.operands[0]
+                if not isinstance(op, IRVariable):
+                    break
+                root_var = op
+                producer = self.dfg.get_producing_instruction(root_var)
+
+            if producer == source_inst:
+                candidates.add(root_var)
+
+        if len(candidates) == 1:
+            return next(iter(candidates))
+
+        # Backward-compatible path for single-output producers.
+        if source_inst.num_outputs == 1:
+            return source_inst.output
+
+        # Ambiguous multi-output origin: keep phi.
+        return None
 
     def _calculate_phi_origins(self):
         self.phi_to_origins = dict()

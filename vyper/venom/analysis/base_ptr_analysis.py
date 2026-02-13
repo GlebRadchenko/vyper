@@ -146,10 +146,18 @@ class BasePtrAnalysis(IRAnalysis):
 
         offset = ops.ofst
 
+        # Some instructions with MEMORY effects can reach here with an
+        # unsupported/unknown offset shape from memory_*_ops().
+        # Be conservative instead of asserting.
+        if offset is None:
+            return MemoryLocation(offset=None, size=size)
+
         if isinstance(offset, IRLiteral):
             return MemoryLocation(offset.value, size=size)
 
-        assert isinstance(offset, IRVariable)
+        if not isinstance(offset, IRVariable):
+            return MemoryLocation(offset=None, size=size)
+
         ptr = self.ptr_from_op(offset)
         if ptr is None:
             return MemoryLocation(offset=None, size=size)

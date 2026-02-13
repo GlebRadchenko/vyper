@@ -3,6 +3,8 @@ from .assert_combiner import AssertCombinerPass
 from .assert_elimination import AssertEliminationPass
 from .assign_elimination import AssignElimination
 from .branch_optimization import BranchOptimizationPass
+from .branch_threading import BranchThreadingPass
+from .calldata_read_elision import CalldataReadElisionPass
 from .cfg_normalization import CFGNormalization
 from .common_subexpression_elimination import CSE
 from .concretize_mem_loc import ConcretizeMemLocPass
@@ -12,6 +14,7 @@ from .fix_calloca import FixCalloca
 from .fix_mem_locations import FixMemLocationsPass
 from .float_allocas import FloatAllocas
 from .function_inliner import FunctionInlinerPass
+from .literal_alias import LiteralAliasPass
 from .literals_codesize import ReduceLiteralsCodesize
 from .load_elimination import LoadElimination
 from .lower_dload import LowerDloadPass

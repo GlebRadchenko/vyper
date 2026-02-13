@@ -178,7 +178,7 @@ class MemLiveness:
                 fn = self.function.ctx.get_function(label)
                 # this lets us deallocate internal
                 # function memory after it's dead
-                live.addmany(self.mem_allocator.mems_used[fn])
+                live.addmany(self._callee_mems_used(fn))
 
                 for op in inst.operands:
                     # REVIEW: changed from ptr_from_op
@@ -232,7 +232,7 @@ class MemLiveness:
                 label = inst.operands[0]
                 assert isinstance(label, IRLabel)
                 fn = self.function.ctx.get_function(label)
-                used.addmany(self.mem_allocator.mems_used[fn])
+                used.addmany(self._callee_mems_used(fn))
             self.used[inst] = used.copy()
         return before != used
 
@@ -242,6 +242,26 @@ class MemLiveness:
         if not isinstance(op, IRVariable):
             return set()
         return self.base_ptrs.get_possible_ptrs(op)
+
+    def _callee_mems_used(self, fn: IRFunction) -> OrderedSet[Allocation]:
+        """Return callee memory footprint, tolerating unresolved call order.
+
+        Native pass scheduling can analyze callers before some callees
+        finalized `mems_used`. Fall back to a conservative approximation.
+        """
+        cached = self.mem_allocator.mems_used.get(fn)
+        if cached is not None:
+            return cached
+
+        inferred: OrderedSet[Allocation] = OrderedSet(Allocation(inst) for inst in fn.get_live_pallocas())
+        for bb in fn.get_basic_blocks():
+            for inst in bb.instructions:
+                if inst.opcode in ("alloca", "palloca"):
+                    inferred.add(Allocation(inst))
+
+        # Cache inferred value to stabilize subsequent lookups in the same run.
+        self.mem_allocator.mems_used[fn] = inferred
+        return inferred
 
     def _mark_store_locations_live(self):
         # DSE may preserve stores whose liveness it can't disprove (e.g.,
@@ -257,3 +277,4 @@ class MemLiveness:
                 write_op = get_memory_write_op(inst)
                 for ptr in self._find_base_ptrs(write_op):
                     self.livesets[ptr.base_alloca].add(inst)
+
